@@ -27,7 +27,8 @@ from nemo_rl.data.llm_message_utils import get_keys_from_message_log
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.virtual_cluster import ClusterConfig, RayVirtualCluster
 from nemo_rl.environments.math_environment import MathEnvConfig
-from nemo_rl.models.generation.vllm import VllmConfig, VllmGeneration
+from nemo_rl.models.generation.interfaces import GenerationConfig
+from nemo_rl.models.generation.vllm import VllmGeneration
 
 # ===============================================================================
 # Configuration
@@ -41,15 +42,9 @@ class EvalConfig(TypedDict):
     pass_k_value: int
 
 
-class EvalGenerationConfig(VllmConfig):
-    """Extended VllmConfig for evaluation with additional fields."""
-
-    num_prompts_per_step: int
-
-
 class MasterConfig(TypedDict):
     eval: EvalConfig
-    generation: EvalGenerationConfig
+    generation: GenerationConfig
     data: MathDataConfig
     env: MathEnvConfig
     cluster: ClusterConfig
