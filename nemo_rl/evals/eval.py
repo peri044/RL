@@ -174,24 +174,19 @@ def eval_pass_k(rewards: torch.Tensor, num_tests_per_prompt: int, k: int) -> flo
     Returns:
         pass_k_score: float
     """
+
+    def eval_single_chunk(n: int, c: int, k: int) -> float:
+        """Calculates 1 - comb(n - c, k) / comb(n, k)."""
+        if n - c < k:
+            return 1.0
+        return float(1.0 - torch.prod(1.0 - k / torch.arange(n - c + 1, n + 1)).item())
+
     # rewards is a 1d tensor of size (batch_size * num_tests_per_prompt)
-    chunks = rewards.split(num_tests_per_prompt)
+    group_rewards = rewards.split(num_tests_per_prompt)
     pass_k_score = 0.0
-    for chunk in chunks:
-        num_correct = chunk.sum().item()
-        if num_tests_per_prompt - num_correct < k:
-            pass_k_score += 1.0
-        else:
-            pass_k_score += float(
-                1.0
-                - torch.prod(
-                    1.0
-                    - k
-                    / torch.arange(
-                        num_tests_per_prompt - num_correct + 1, num_tests_per_prompt + 1
-                    )
-                ).item()
-            )
+    for group_reward in group_rewards:
+        num_correct = group_reward.sum().item()
+        pass_k_score += eval_single_chunk(num_tests_per_prompt, num_correct, k)
 
     return pass_k_score
 
