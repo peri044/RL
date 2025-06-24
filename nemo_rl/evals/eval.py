@@ -168,7 +168,7 @@ def eval_pass_k(rewards: torch.Tensor, num_tests_per_prompt: int, k: int) -> flo
 
     Reference: https://github.com/huggingface/evaluate/blob/32546aafec25cdc2a5d7dd9f941fc5be56ba122f/metrics/code_eval/code_eval.py#L198-L213
     Args:
-        rewards: Tensor of shape (batch_size, num_tests_per_prompt)
+        rewards: Tensor of shape (batch_size * num_tests_per_prompt)
         k: int (pass@k value)
 
     Returns:
