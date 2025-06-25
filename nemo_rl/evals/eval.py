@@ -91,20 +91,19 @@ def setup(
     top_k = generation_config["top_k"]
 
     # TODO @yukih: support cons@k
-    assert metric in ["pass@1", "pass@k"], f"Invalid metric: {metric}"
+    # Validate metrics
+    assert metric in ["pass@k"], f"Invalid metric: {metric}"
     if num_tests_per_prompt > 1:
         assert temperature > 0 and top_k != 1, (
             "temperature > 0 and top_k != 1 are required for multiple samples"
         )
 
-    # Validate metrics
-    if metric == "pass@k":
-        assert pass_k_value > 1, "pass_k_value must be greater than 1 for pass@k metric"
-        assert num_tests_per_prompt >= pass_k_value, (
-            "num_tests_per_prompt must be greater than or equal to pass_k_value for pass@k metric"
-        )
-    elif metric == "pass@1":
-        assert pass_k_value == 1, "pass_k_value must be 1 for pass@1 metric"
+    assert pass_k_value >= 1, (
+        "pass_k_value must be greater than or equal to 1 for pass@k metric"
+    )
+    assert num_tests_per_prompt >= pass_k_value, (
+        "num_tests_per_prompt must be greater than or equal to pass_k_value for pass@k metric"
+    )
 
     # ==========================
     #           Data
@@ -210,14 +209,8 @@ def run_env_eval(vllm_generation, dataloader, env, master_config):
     pass_k_value = eval_config["pass_k_value"]
 
     # Run evaluation loop
-    score, count = 0.0, 0
+    score = 0.0
     for batch in dataloader:
-        # update stats
-        if metric == "pass@1":
-            count += batch.size * num_tests_per_prompt
-        elif metric == "pass@k":
-            count += batch.size
-
         # measure multiple samples
         if num_tests_per_prompt > 1:
             batch = batch.repeat_interleave(num_tests_per_prompt)
@@ -250,9 +243,7 @@ def run_env_eval(vllm_generation, dataloader, env, master_config):
         env_return = ray.get(env.step.remote(to_env, batch["extra_env_info"]))
         rewards = env_return.rewards
         # update stats
-        if metric == "pass@1":
-            score += rewards.sum().item()
-        elif metric == "pass@k":
+        if metric == "pass@k":
             score += eval_pass_k(rewards, num_tests_per_prompt, pass_k_value)
         else:
             raise ValueError(f"Invalid metric: {metric}")
@@ -268,11 +259,11 @@ def run_env_eval(vllm_generation, dataloader, env, master_config):
     temperature = generation_config["temperature"]
     top_p = generation_config["top_p"]
     top_k = generation_config["top_k"]
-    average_score = score / count
+    average_score = score / len(dataloader.dataset)
 
     print("\n" + "=" * 60)
     print(f"{model_name=} {dataset_name=}")
     print(f"{max_new_tokens=} {temperature=} {top_p=} {top_k=}\n")
-    print(f"{metric=} {num_tests_per_prompt=}\n")
-    print(f"score={average_score:.4f} ({score}/{count})")
+    print(f"{metric=} {pass_k_value=} {num_tests_per_prompt=}\n")
+    print(f"score={average_score:.4f} ({score}/{len(dataloader.dataset)})")
     print("=" * 60 + "\n")
