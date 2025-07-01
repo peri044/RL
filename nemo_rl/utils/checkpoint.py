@@ -22,7 +22,7 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Optional, TypedDict, Union
+from typing import Any, NotRequired, Optional, TypedDict, Union
 
 import numpy as np
 import torch
@@ -51,7 +51,7 @@ class CheckpointingConfig(TypedDict):
     higher_is_better: bool
     save_period: int
     keep_top_k: Optional[int]
-    model_name: Optional[str]
+    model_name: NotRequired[str]
 
 
 class CheckpointManager:
@@ -225,6 +225,7 @@ class CheckpointManager:
         """Get the path to the latest checkpoint.
 
         Returns the path to the checkpoint with the highest step number.
+        If config.yaml is found in the checkpoint directory, the current policy model name is compared with the model name in the checkpoint to ensure the correct checkpoint is being loaded.
 
         Returns:
             Optional[str]: Path to the latest checkpoint, or None if no checkpoints exist.
