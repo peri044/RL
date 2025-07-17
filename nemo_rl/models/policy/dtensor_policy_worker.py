@@ -17,7 +17,7 @@ import gc
 import os
 from collections import defaultdict
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from typing import Any, Generator, Iterable, List, Optional, Set, Union, cast
+from typing import Any, Generator, Iterable, Optional, Set, Union, cast
 
 import ray
 import torch
@@ -55,6 +55,7 @@ from nemo_rl.models.policy.interfaces import (
     ReferenceLogprobOutputSpec,
 )
 from nemo_rl.models.policy.utils import (
+    configure_expandable_segments,
     get_gpu_info,
     get_runtime_env_for_policy_worker,
     import_class_from_path,
@@ -114,7 +115,9 @@ def get_cpu_state_dict(
     return new_state_dict
 
 
-@ray.remote(runtime_env=get_runtime_env_for_policy_worker("dtensor_policy_worker"))
+@ray.remote(
+    runtime_env=get_runtime_env_for_policy_worker("dtensor_policy_worker")
+)  # pragma: no cover
 class DTensorPolicyWorker:
     def __repr__(self) -> str:
         """Customizes the actor's prefix in the Ray logs.
@@ -136,14 +139,17 @@ class DTensorPolicyWorker:
         init_reference_model: bool = True,
         **kwargs: Any,
     ):
-        # Disable NCCL SHM if training and generation are not co-located: https://github.com/NVIDIA-NeMo/RL/issues/564
-        if (
-            "generation" in config
-            and config["generation"] is not None
-            and not config["generation"]["colocated"]["enabled"]
-        ):
-            os.environ["NCCL_SHM_DISABLE"] = "1"
-            os.environ["NCCL_P2P_DISABLE"] = "1"
+        self.is_generation_colocated = None
+        if "generation" in config and config["generation"] is not None:
+            self.is_generation_colocated = config["generation"]["colocated"]["enabled"]
+
+        # Explicitly set NCCL_CUMEM_ENABLE to 1 to avoid the P2P initialization error for PyNCCLCommunicator.
+        # See https://github.com/NVIDIA-NeMo/RL/issues/564 for more details.
+        if not self.is_generation_colocated:
+            os.environ["NCCL_CUMEM_ENABLE"] = "1"
+
+        # Only enable expandable_segments on Hopper and newer architectures (compute capability 9.x+)
+        configure_expandable_segments()
 
         self.cfg = config
         # torch distributed init. Envars for rank, world_size, and master_addr and master_port are set from the ray remote call
@@ -261,18 +267,27 @@ class DTensorPolicyWorker:
             ),
         )
 
+        # Handle tied word embeddings after loading the state dict
+        # We need to actually tie the parameters at the model level
+        is_tied_lm_head = getattr(
+            getattr(self.model, "config", {}), "tie_word_embeddings", False
+        )
+        if is_tied_lm_head:
+            embed_tokens_weight = None
+            for name, param in self.model.named_parameters():
+                if "embed_tokens" in name and name.endswith(".weight"):
+                    embed_tokens_weight = param
+                    break
+
+            if embed_tokens_weight is not None:
+                self.model.lm_head.weight = embed_tokens_weight
+
         # Manually broadcast buffers
         for _, buf in self.model.named_buffers():
-            torch.distributed.broadcast(buf, src=0)
+            torch.distributed.broadcast(to_local_if_dtensor(buf), src=0)
 
         if self.cpu_offload:
             self.model = self.move_to_device(self.model, "cpu")
-
-        # used for streaming update inference engine weights
-        self._held_sharded_state_dict_reference: Optional[dict[str, torch.Tensor]] = (
-            None
-        )
-        self._held_streamed_param_reference: Optional[dict[str, torch.Tensor]] = None
 
         if init_reference_model:
             self.reference_model_state_dict = get_cpu_state_dict(
@@ -329,13 +344,22 @@ class DTensorPolicyWorker:
                 "No weights path provided. Starting from scratch (default policy init)"
             )
 
+        # vars used for refit
+        ## will be initialized in prepare_refit_info
+        self.refit_param_info = None
+        ## used for streaming update inference engine weights
+        self._held_sharded_state_dict_reference: Optional[dict[str, torch.Tensor]] = (
+            None
+        )
+        self._held_streamed_param_reference: Optional[dict[str, torch.Tensor]] = None
+
     # Refer to nemo impl. Below is original comment.
     # based on https://github.com/pytorch/torchtitan/blob/main/torchtitan/distributed/utils.py#L113
     @staticmethod
     def create_context_parallel_ctx(
         cp_mesh: torch.distributed.device_mesh.DeviceMesh,
-        cp_buffers: List[torch.Tensor],
-        cp_seq_dims: List[int],
+        cp_buffers: list[torch.Tensor],
+        cp_seq_dims: list[int],
         cp_no_restore_buffers: Set[torch.Tensor],
         cp_rotate_method: Optional[str] = None,
     ):
@@ -343,8 +367,8 @@ class DTensorPolicyWorker:
 
         Args:
             cp_mesh (DeviceMesh): The device mesh for context parallel.
-            cp_buffers (List[torch.Tensor]): The buffers for context parallel.
-            cp_seq_dims (List[int]): The sequence dimensions for context parallel.
+            cp_buffers (list[torch.Tensor]): The buffers for context parallel.
+            cp_seq_dims (list[int]): The sequence dimensions for context parallel.
             cp_no_restore_buffers (Set[torch.Tensor]): The no restore buffers for context parallel.
             cp_rotate_method (str): The rotation method for context parallel, such as "allgather" or "addtoall".
         """
@@ -385,11 +409,6 @@ class DTensorPolicyWorker:
         """Initialize the collective communication."""
         from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
         from vllm.distributed.utils import StatelessProcessGroup
-
-        # keep the same behavior as vllm
-        # see https://github.com/vllm-project/vllm/blob/v0.8.5/vllm/env_override.py#L25
-        if not os.path.exists("/dev/nvidia-caps-imex-channels"):
-            os.environ["NCCL_CUMEM_ENABLE"] = "0"
 
         if self.rank == 0:
             pg = StatelessProcessGroup.create(
@@ -562,7 +581,12 @@ class DTensorPolicyWorker:
                             "generation" in self.cfg
                             and self.cfg["generation"] is not None
                         ):
-                            logits.div_(self.cfg["generation"]["temperature"])
+                            # The V1 engine returns raw logits before temperature scaling.
+                            # The V0 engine (when VLLM_USE_V1 is not '1') returns scaled logits.
+                            # Therefore, we only divide if we are NOT using the V1 engine.
+                            use_v1_engine = os.environ.get("VLLM_USE_V1") == "1"
+                            if not use_v1_engine:
+                                logits.div_(self.cfg["generation"]["temperature"])
 
                         if self.cp_size > 1:
                             seq_index_dtensor = (
@@ -574,7 +598,8 @@ class DTensorPolicyWorker:
                                 .full_tensor()
                                 .squeeze(0)
                             )
-                            _, sorted_indices = torch.sort(seq_index_dtensor)
+
+                            mb["seq_index"] = seq_index_dtensor
 
                             for tensor_name in mb:
                                 current_tensor = mb[tensor_name]
@@ -587,18 +612,28 @@ class DTensorPolicyWorker:
                                             current_tensor,
                                             device_mesh=self.cp_mesh,
                                             placements=[Shard(sequence_dim)],
-                                        ).full_tensor()[:, sorted_indices]
+                                        )
                                         break
 
                             if isinstance(logits, DTensor):
-                                logits = logits.full_tensor()
+                                # Must be tp sharded
+                                assert (
+                                    logits.device_mesh.ndim == 1
+                                    and logits.device_mesh.mesh_dim_names[0] == "tp"
+                                ), "logits must be tp sharded"
 
-                            logits_dtensor = DTensor.from_local(
-                                logits,
-                                device_mesh=self.cp_mesh,
-                                placements=[Shard(sequence_dim)],
-                            )
-                            logits = logits_dtensor.full_tensor()[:, sorted_indices]
+                                # CP is implicitly sharded on the seq dim, so we need to redistribute to the tp dim
+                                logits = DTensor.from_local(
+                                    logits.to_local(),
+                                    device_mesh=self.device_mesh[("cp", "tp")],
+                                    placements=[Shard(sequence_dim), Shard(-1)],
+                                )
+                            else:
+                                logits = DTensor.from_local(
+                                    logits,
+                                    device_mesh=self.device_mesh[("cp", "tp")],
+                                    placements=[Shard(sequence_dim), Shard(-1)],
+                                )
 
                         loss, loss_metrics = loss_fn(
                             logits, mb, global_valid_seqs, global_valid_toks
@@ -871,6 +906,26 @@ class DTensorPolicyWorker:
         return get_device_uuid(device_idx)
 
     @torch.no_grad()
+    def prepare_refit_info(self) -> Optional[dict[str, Any]]:
+        state_dict = self.model.state_dict()
+
+        if self.is_generation_colocated:
+            # Collect info for streaming multiple tensors
+            self.refit_param_info = []
+            for name, tensor in state_dict.items():
+                # dtensor's numel will return complete tensor instead of only local tensor
+                size_in_bytes = tensor.element_size() * tensor.numel()
+                self.refit_param_info.append((name, size_in_bytes))
+
+        else:
+            # Collect info for collective communication
+            state_dict_info = {}
+            for name, tensor in state_dict.items():
+                state_dict_info[name] = (tensor.shape, self.dtype)
+
+            return state_dict_info
+
+    @torch.no_grad()
     def prepare_weights_for_ipc(self) -> tuple[list[tuple[str, int]], float]:
         """Prepare the weights for IPC.
 
@@ -890,22 +945,16 @@ class DTensorPolicyWorker:
             self.model.state_dict()
         )
 
-        # Collect info for streaming multiple tensors
-        state_dict_info = []
-        for name, tensor in self._held_sharded_state_dict_reference.items():
-            # dtensor's numel will return complete tensor instead of only local tensor
-            size_in_bytes = tensor.element_size() * tensor.numel()
-            state_dict_info.append((name, size_in_bytes))
-
         # Collect current available memory for refit
         ## Get current device index from torch
         device_idx = torch.cuda.current_device()
         ## Get device free memory using NVML
         total_available_bytes = get_free_memory_bytes(device_idx)
         ## Use 80% of the free memory for safety
-        total_available_bytes *= 0.8
+        memory_ratio = os.getenv("NRL_REFIT_BUFFER_MEMORY_RATIO", "0.8")
+        total_available_bytes *= float(memory_ratio)
 
-        return state_dict_info, total_available_bytes
+        return self.refit_param_info, total_available_bytes
 
     @torch.no_grad()
     def get_weights_ipc_handles(self, keys: Iterable[str]) -> dict[str, Any]:
@@ -943,25 +992,10 @@ class DTensorPolicyWorker:
             handle = reduce_tensor(p.detach())
             all_handles.append((key, handle))
 
-        return {device_uuid: all_handles}
+        # (pack_tensor_for_ipc: bool, handles: list)
+        serialized = (False, all_handles)
 
-    @torch.no_grad()
-    def prepare_info_for_collective(self) -> dict[str, Any]:
-        """Prepare the info for collective communication.
-
-        Returns:
-            dict: A dictionary containing the info for collective communication.
-        """
-        # Get state_dict
-        self.model = self.move_to_cuda(self.model)
-        state_dict = self.model.state_dict()
-
-        # Collect info for collective communication
-        state_dict_info = {}
-        for name, tensor in state_dict.items():
-            state_dict_info[name] = (tensor.shape, self.dtype)
-
-        return state_dict_info
+        return {device_uuid: serialized}
 
     @torch.no_grad()
     def broadcast_weights_for_collective(self) -> None:

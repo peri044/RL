@@ -5,7 +5,7 @@
   - [📣 News](#-news)
   - [Features](#features)
   - [Prerequisites](#prerequisites)
-  - [Supported Training Backends](#training-backends)
+  - [Training Backends](#training-backends)
   - [GRPO](#grpo)
     - [GRPO Single Node](#grpo-single-node)
     - [GRPO Multi-node](#grpo-multi-node)
@@ -105,6 +105,13 @@ pip install uv
 #       This ensures that the version of python used is always what we prescribe.
 uv venv
 
+# If working outside a container, it can help to build flash-attn and warm the
+# uv cache before your first run. The NeMo RL Dockerfile will warm the uv cache
+# with flash-attn. See https://docs.nvidia.com/nemo/rl/latest/docker.html for
+# instructions if you are looking for the NeMo RL container.
+bash tools/build-flash-attn-in-uv-cache.sh
+# If sucessful, you should see "✅ flash-attn successfully added to uv cache"
+
 # If you cannot install at the system level, you can install for your user with
 # pip install --user uv
 
@@ -120,6 +127,7 @@ uv venv
 
 - Use the `uv run <command>` to execute scripts within the managed environment. This helps maintain consistency across different shells and sessions.
 - Ensure you have the necessary CUDA drivers and PyTorch installed compatible with your hardware.
+- On the first install, `flash-attn` can take a while to install (~45min with 48 CPU hyperthreads). After it is built once, it is cached in your `uv`'s cache dir making subsequent installs much quicker.
 - **Reminder**: Don't forget to set your `HF_HOME`, `WANDB_API_KEY`, and `HF_DATASETS_CACHE` (if needed). You'll need to do a `huggingface-cli login` as well for Llama models.
 
 ## Training Backends
@@ -201,7 +209,7 @@ The required `CONTAINER` can be built by following the instructions in the [Dock
 This section outlines how to run GRPO for Qwen2.5-32B with a 16k sequence length.
 ```sh
 # Run from the root of NeMo RL repo
-NUM_ACTOR_NODES=16
+NUM_ACTOR_NODES=32
 
 # Download Qwen before the job starts to avoid spending time downloading during the training loop
 HF_HOME=/path/to/hf_home huggingface-cli download Qwen/Qwen2.5-32B
@@ -343,7 +351,7 @@ If you have trained a model and saved the checkpoint in the Pytorch DCP format, 
 
 ```sh
 # Example for a GRPO checkpoint at step 170
-uv run python examples/convert_dcp_to_hf.py \
+uv run python examples/converters/convert_dcp_to_hf.py \
     --config results/grpo/step_170/config.yaml \
     --dcp-ckpt-path results/grpo/step_170/policy/weights/ \
     --hf-ckpt-path results/grpo/hf

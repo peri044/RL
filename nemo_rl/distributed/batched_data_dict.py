@@ -17,7 +17,6 @@ from typing import (
     Any,
     Generic,
     Iterator,
-    List,
     Mapping,
     Optional,
     Type,
@@ -189,7 +188,7 @@ class BatchedDataDict(UserDict, Generic[DictT]):
         )
         return batch_sizes.pop()
 
-    def reorder_data(self, reorded_indices: List[int]):
+    def reorder_data(self, reorded_indices: list[int]):
         """Reorders the data along the batch dimension by the given indices."""
         total_batch_size = self.get_total_batch_size()
 
