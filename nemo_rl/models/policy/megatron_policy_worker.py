@@ -496,9 +496,9 @@ class MegatronPolicyWorker:
         model_cfg.pipeline_dtype = dtype_map[self.cfg["megatron_cfg"]["pipeline_dtype"]]
         model_cfg.parallel_output = True
         if self.cfg["megatron_cfg"]["activation_checkpointing"]:
-            model_cfg.activations_checkpoint_granularity = "full"
-            model_cfg.activations_checkpoint_method = "uniform"
-            model_cfg.activations_checkpoint_num_layers = 1
+            model_cfg.recompute_granularity = "full"
+            model_cfg.recompute_method = "uniform"
+            model_cfg.recompute_num_layers = 1
         if not model_cfg.gated_linear_unit:
             assert model_cfg.activation_func is not None, (
                 "activation_func must be set if not using gated_linear_unit. This likely "
@@ -901,7 +901,9 @@ class MegatronPolicyWorker:
 
         if not eval_mode:
             # take one LR step every rollout batch
-            self.scheduler.step(increment=1)
+            # we need to scale the step by gbs to counteract the fact that NeMo automatically
+            # scales lr_warmup_steps by gbs during init
+            self.scheduler.step(increment=gbs)
 
         # Aggregate metrics across all microbatches
         mb_metrics = defaultdict(list)
