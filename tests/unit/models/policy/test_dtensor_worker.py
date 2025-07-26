@@ -42,7 +42,7 @@ def create_test_config(
     sequence_parallel: bool = False,
     cpu_offload: bool = False,
     activation_checkpointing: bool = False,
-    custom_parallel_plan: str = None,
+    custom_parallel_plan: str | None = None,
 ) -> PolicyConfig:
     return {
         "model_name": model_name,
@@ -61,6 +61,13 @@ def create_test_config(
             "top_k": None,
             "stop_token_ids": None,
             "stop_strings": None,
+            "colocated": {
+                "enabled": True,
+                "resources": {
+                    "gpus_per_node": None,
+                    "num_nodes": None,
+                },
+            },
         },
         "dtensor_cfg": {
             "enabled": True,
@@ -230,7 +237,7 @@ def test_lm_policy_init(policy_setup):
 @pytest.fixture
 def training_setup(request, two_gpu_virtual_cluster):
     """Setup and teardown specifically for training tests."""
-    model_name, tp, cp, cpu_offload, sequence_parallel, activation_checkpointing = (
+    model_name, tp, cp, sequence_parallel, cpu_offload, activation_checkpointing = (
         request.param
     )
     policy = None
@@ -239,7 +246,7 @@ def training_setup(request, two_gpu_virtual_cluster):
 
     try:
         config = create_test_config(
-            model_name, tp, cp, cpu_offload, sequence_parallel, activation_checkpointing
+            model_name, tp, cp, sequence_parallel, cpu_offload, activation_checkpointing
         )
         tokenizer = get_tokenizer(config["tokenizer"])
         print(
@@ -293,8 +300,7 @@ def training_setup(request, two_gpu_virtual_cluster):
 @pytest.mark.parametrize(
     "training_setup",
     [
-        # model_name, tp, cp, cpu_offload, sequence_parallel, activation_checkpointing
-        # Split grid over tp/cp/cpu/sp/act across qwen and llama
+        # model_name                        tp cp  sp     cpu    act
         (TEST_ASSETS.TINY_LLAMA_MODEL_PATH, 1, 1, False, False, False),
         (TEST_ASSETS.TINY_LLAMA_MODEL_PATH, 1, 1, True, False, False),
         (TEST_ASSETS.TINY_LLAMA_MODEL_PATH, 1, 1, False, True, False),
@@ -310,7 +316,14 @@ def training_setup(request, two_gpu_virtual_cluster):
         (TEST_ASSETS.TINY_QWEN3_MODEL_PATH, 1, 1, False, True, True),
         (TEST_ASSETS.TINY_QWEN3_MODEL_PATH, 1, 1, True, True, True),
         (TEST_ASSETS.TINY_QWEN3_MODEL_PATH, 1, 2, False, False, False),
-        (TEST_ASSETS.TINY_GEMMA3_MODEL_PATH, 1, 1, True, True, False),
+        (
+            TEST_ASSETS.TINY_GEMMA3_MODEL_PATH,
+            1,
+            1,
+            True,
+            True,
+            False,
+        ),  # gemma3 doesn't support spda
         (TEST_ASSETS.TINY_GEMMA3_MODEL_PATH, 1, 1, True, False, True),
         (TEST_ASSETS.TINY_GEMMA3_MODEL_PATH, 1, 1, False, True, True),
         (TEST_ASSETS.TINY_GEMMA3_MODEL_PATH, 1, 1, True, True, True),
@@ -356,7 +369,7 @@ def test_dtensor_worker_training(training_setup):
 @pytest.fixture
 def logprob_setup(request, two_gpu_virtual_cluster):
     """Setup and teardown specifically for training tests."""
-    model_name, tp, cp, cpu_offload, sequence_parallel, activation_checkpointing = (
+    model_name, tp, cp, sequence_parallel, cpu_offload, activation_checkpointing = (
         request.param
     )
     policy = None
@@ -364,7 +377,7 @@ def logprob_setup(request, two_gpu_virtual_cluster):
 
     try:
         config = create_test_config(
-            model_name, tp, cp, cpu_offload, sequence_parallel, activation_checkpointing
+            model_name, tp, cp, sequence_parallel, cpu_offload, activation_checkpointing
         )
         tokenizer = get_tokenizer(config["tokenizer"])
         print(
@@ -480,12 +493,16 @@ def test_dtensor_tp_and_tied_model_with_custom_parallel_plan(two_gpu_virtual_clu
     from torch.distributed.tensor.parallel import ColwiseParallel
     from torch.distributed.tensor.placement_types import Replicate
 
-    custom_parallel_plan = {"lm_head": ColwiseParallel(output_layouts=Replicate())}
+    custom_parallel_plan = {
+        "lm_head": ColwiseParallel(output_layouts=Replicate()),
+        "model.embed_tokens": ColwiseParallel(output_layouts=Replicate()),
+    }
     config = create_test_config(
         model_name=TEST_ASSETS.TINY_LLAMA_TIED_MODEL_PATH,
         tp=2,
-        cpu_offload=False,
+        cp=1,
         sequence_parallel=False,
+        cpu_offload=False,
         activation_checkpointing=False,
         custom_parallel_plan=custom_parallel_plan,
     )
@@ -503,11 +520,11 @@ def test_dtensor_tp_and_tied_model_with_custom_parallel_plan(two_gpu_virtual_clu
     state_dict = ray.get(policy.worker_group.workers[0].return_state_dict.remote())
     total_shape = state_dict["lm_head.weight"].shape
     sharded_shape = state_dict["lm_head.weight"].to_local().shape
-    assert total_shape[0] == sharded_shape[0] * 2, (
-        "lm_head.weight should be sharded across 2 GPUs"
+    assert total_shape[0] == sharded_shape[0], (
+        "lm_head.weight should have the same number of rows"
     )
-    assert total_shape[1] == sharded_shape[1], (
-        "lm_head.weight should have the same number of columns"
+    assert total_shape[1] == sharded_shape[1] * 2, (
+        "lm_head.weight should be sharded across 2 GPUs"
     )
 
     # Clean up
