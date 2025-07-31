@@ -13,10 +13,8 @@
 # limitations under the License.
 import os
 import warnings
-from collections import defaultdict
-from functools import partial
 from pathlib import Path
-from typing import NotRequired, Optional, TypedDict, cast
+from typing import Optional, TypedDict
 
 import numpy as np
 import torch
@@ -24,11 +22,20 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import AutoTokenizer
 
 from nemo_rl.algorithms.loss_functions import (
-    DPOLossFn,
+    PreferenceLoss,
 )
 from nemo_rl.algorithms.utils import set_seed
 from nemo_rl.data import DataConfig
-from nemo_rl.data.datasets import AllTaskProcessedDataset, dpo_collate_fn
+from nemo_rl.data.datasets import (
+    AllTaskProcessedDataset,
+    preference_collate_fn,
+)
+from nemo_rl.data.interfaces import TaskDataSpec
+from nemo_rl.data.llm_message_utils import (
+    add_loss_mask_to_message_log,
+    batched_message_log_to_flat_message,
+)
+from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.virtual_cluster import ClusterConfig, RayVirtualCluster
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.interfaces import PolicyInterface
@@ -39,15 +46,15 @@ from nemo_rl.utils.nsys import maybe_gpu_profile_step
 from nemo_rl.utils.timer import Timer
 
 
-class DPOSaveState(TypedDict):
+class RMSaveState(TypedDict):
     epoch: int  # Track current epoch
     step: int  # Track step within current epoch
     total_steps: int  # Track total number of steps across all epochs
-    val_loss: NotRequired[float]  # Optional field - may not be present during training
+    val_loss: float
     consumed_samples: int
 
 
-def _default_dpo_save_state() -> DPOSaveState:
+def _default_rm_save_state() -> RMSaveState:
     return {
         "epoch": 0,
         "step": 0,
@@ -56,9 +63,9 @@ def _default_dpo_save_state() -> DPOSaveState:
     }
 
 
-class DPOConfig(TypedDict):
-    max_num_epochs: int
+class RMConfig(TypedDict):
     max_num_steps: int
+    max_num_epochs: int
     val_period: int
     val_batches: int
     val_global_batch_size: int
@@ -66,24 +73,22 @@ class DPOConfig(TypedDict):
     val_at_start: bool
     seed: int
 
-    reference_policy_kl_penalty: float
-    preference_average_log_probs: bool
-    sft_average_log_probs: bool
-    ## TODO(@ashors) support other loss functions
-    ## https://github.com/NVIDIA-NeMo/RL/issues/193
-    # preference_loss: str
-    # gt_reward_scale: float
-    preference_loss_weight: float
-    sft_loss_weight: float
-
 
 class MasterConfig(TypedDict):
     policy: PolicyConfig
     data: DataConfig
-    dpo: DPOConfig
+    rm: RMConfig
     logger: LoggerConfig
     cluster: ClusterConfig
     checkpointing: CheckpointingConfig
+
+
+class RMValMetrics(TypedDict):
+    val_loss: float
+    accuracy: float
+    rewards_chosen_mean: float
+    rewards_rejected_mean: float
+    num_valid_samples: float
 
 
 # =======================================================
@@ -99,36 +104,25 @@ def setup(
     RayVirtualCluster,
     StatefulDataLoader,
     StatefulDataLoader,
-    DPOLossFn,
-    Logger,
-    CheckpointManager,
-    DPOSaveState,
+    PreferenceLoss,
     MasterConfig,
+    Logger,
+    TaskDataSpec,
+    RMSaveState,
 ]:
-    """Main entry point for running DPO algorithm.
+    """Main entry point for running RM algorithm.
 
     Returns:
         Tuple of policy, cluster, dataloader, tokenizer, loss_fn, math_env, master_config, logger
     """
-    # Make sure we are not using dynamic batching or sequence packing.
-    # Anything that changes the order of data within a batch is currently incompatible with DPO.
-    assert not master_config["policy"]["dynamic_batching"]["enabled"], (
-        "Dynamic batching is currently not supported with DPO. "
-        "See https://github.com/NVIDIA-NeMo/RL/issues/719"
-    )
-    assert not master_config["policy"]["sequence_packing"]["enabled"], (
-        "Sequence packing is currently not supported with DPO. "
-        "See https://github.com/NVIDIA-NeMo/RL/issues/719"
-    )
-
-    set_seed(master_config["dpo"]["seed"])
+    set_seed(master_config["rm"]["seed"])
 
     # Extract individual configs for easier access
     policy_config = master_config["policy"]
     data_config = master_config["data"]
     logger_config = master_config["logger"]
     cluster_config = master_config["cluster"]
-    dpo_config = master_config["dpo"]
+    rm_config = master_config["rm"]
 
     # ==========================
     #         Logger
@@ -139,29 +133,20 @@ def setup(
     # ==========================
     #      Checkpointing
     # ==========================
-    # Add policy model name to checkpointing config
-    master_config["checkpointing"]["model_name"] = policy_config["model_name"]
     checkpointer = CheckpointManager(master_config["checkpointing"])
     last_checkpoint_path = checkpointer.get_latest_checkpoint_path()
-    dpo_save_state: Optional[DPOSaveState] = cast(
-        Optional[DPOSaveState], checkpointer.load_training_info(last_checkpoint_path)
+    rm_save_state: Optional[RMSaveState] = checkpointer.load_training_info(
+        last_checkpoint_path
     )
 
     # ==========================
     #           Data
     # ==========================
-    ## TODO(@ashors) reduce boilerplate and move reused code into utils
     train_dataloader = StatefulDataLoader(
         train_dataset,
         batch_size=policy_config["train_global_batch_size"],
         shuffle=True,
-        collate_fn=partial(
-            dpo_collate_fn,
-            tokenizer=tokenizer,
-            make_sequence_length_divisible_by=policy_config[
-                "make_sequence_length_divisible_by"
-            ],
-        ),
+        collate_fn=preference_collate_fn,
         drop_last=True,
     )
 
@@ -173,15 +158,9 @@ def setup(
 
     val_dataloader = StatefulDataLoader(
         val_dataset,
-        batch_size=dpo_config["val_global_batch_size"],
+        batch_size=rm_config["val_global_batch_size"],
         shuffle=False,
-        collate_fn=partial(
-            dpo_collate_fn,
-            tokenizer=tokenizer,
-            make_sequence_length_divisible_by=policy_config[
-                "make_sequence_length_divisible_by"
-            ],
-        ),
+        collate_fn=preference_collate_fn,
         drop_last=True,
     )
 
@@ -190,7 +169,7 @@ def setup(
     # ==========================
     print("\n▶ Setting up compute cluster...")
     cluster = RayVirtualCluster(
-        name="dpo_cluster",
+        name="rm_cluster",
         bundle_ct_per_node_list=[cluster_config["gpus_per_node"]]
         * cluster_config["num_nodes"],
         use_gpus=True,
@@ -214,9 +193,9 @@ def setup(
         if last_checkpoint_path
         else None,
         init_optimizer=True,
-        init_reference_model=True,
+        init_reference_model=False,
     )
-    loss_fn = DPOLossFn(master_config["dpo"])
+    loss_fn = PreferenceLoss()
     print("  ✓ Model initialized")
 
     print("\n" + "=" * 60)
@@ -231,36 +210,9 @@ def setup(
         loss_fn,
         logger,
         checkpointer,
-        dpo_save_state,
+        rm_save_state,
         master_config,
     )
-
-
-def add_ref_logprobs_to_data(dataloader, policy, master_config, is_val=False):
-    dataloader_iter = iter(dataloader)
-    while True:
-        try:
-            batch = next(dataloader_iter)
-
-            micro_batch_size = (
-                master_config["dpo"]["val_micro_batch_size"] * 2
-                if is_val
-                else master_config["policy"]["train_micro_batch_size"] * 2
-            )
-
-            ## append ref policy logprobs to batch
-            logprobs = policy.get_reference_policy_logprobs(
-                batch,
-                micro_batch_size=micro_batch_size,
-            )["reference_logprobs"]
-            ## want logprobs for batch to correspond to the log probabilities of the next tokens
-            ## so we roll the logprobs to the left by one
-            batch["reference_policy_logprobs"] = torch.roll(logprobs, -1, dims=-1)
-
-            yield batch
-
-        except StopIteration:
-            break
 
 
 # =======================================================
@@ -273,6 +225,7 @@ def validate(
     loss_fn,
     step: int,
     master_config: MasterConfig,
+    rm_task_spec: TaskDataSpec,
     val_batches: int,
     val_batch_size: int,
     val_mbs: int,
@@ -287,16 +240,45 @@ def validate(
     with timer.time("total_validation_time"):
         print(f"▶ Starting validation at step {step}...")
 
-        val_metrics = defaultdict(lambda: 0.0)
+        # Show a progress indicator for validation
+        # val_total = len(val_dataloader)
+
+        list_of_val_metrics = []
+
         num_valid_batches = 0
-        for batch_idx, val_batch in enumerate(
-            add_ref_logprobs_to_data(val_dataloader, policy, master_config, is_val=True)
-        ):
+
+        policy.prepare_for_training()
+        for batch_idx, val_batch in enumerate(val_dataloader):
+            ## add loss mask based on role to every message
+            add_loss_mask_to_message_log(
+                val_batch["message_log"],
+                roles_to_train_on=["assistant"],
+            )
+
+            cat_and_padded, input_lengths = batched_message_log_to_flat_message(
+                val_batch["message_log"],
+                pad_value_dict={"token_ids": tokenizer.pad_token_id},
+                make_sequence_length_divisible_by=master_config["policy"][
+                    "make_sequence_length_divisible_by"
+                ],
+            )
+
+            val_data: BatchedDataDict = BatchedDataDict(
+                {
+                    "input_ids": cat_and_padded["token_ids"],
+                    "input_lengths": input_lengths,
+                    "token_mask": cat_and_padded["token_loss_mask"],
+                    "sample_mask": val_batch["loss_multiplier"],
+                }
+            )
+
             ## just run model fwd
             val_results = policy.train(
-                val_batch,
+                val_data,
                 loss_fn,
                 eval_mode=True,
+                ## NOTE: we double the batch size here because each preference example corresponds to a pair of
+                ## examples, chosen and rejected, and the pair needs to be processed as part of the same microbatch.
                 gbs=val_batch_size * 2,
                 mbs=val_mbs * 2,
             )
@@ -306,22 +288,75 @@ def validate(
                     "No validation metrics were collected for this batch."
                     " This is likely because there were no valid samples."
                 )
-
             else:
-                for k, v in val_results["all_mb_metrics"].items():
-                    if k in {"lr", "wd", "global_valid_seqs", "global_valid_toks"}:
-                        val_metrics[k] += np.mean(v).item()
-                    else:
-                        val_metrics[k] += np.sum(v).item()
+                list_of_val_metrics.append(
+                    RMValMetrics(
+                        val_loss=sum(val_results["all_mb_metrics"]["loss"]),
+                        accuracy=sum(val_results["all_mb_metrics"]["accuracy"]),
+                        rewards_chosen_mean=sum(
+                            val_results["all_mb_metrics"]["rewards_chosen_mean"]
+                        ),
+                        rewards_rejected_mean=sum(
+                            val_results["all_mb_metrics"]["rewards_rejected_mean"]
+                        ),
+                        num_valid_samples=sum(
+                            val_results["all_mb_metrics"]["num_valid_samples"]
+                        ),
+                    )
+                )
+
                 num_valid_batches += 1
 
             if val_batches > 0 and batch_idx >= val_batches - 1:
                 break
 
-        for k, v in val_metrics.items():
-            if k == "num_valid_samples":
-                continue
-            val_metrics[k] /= num_valid_batches
+        if num_valid_batches > 0:
+            sum_num_valid_samples = sum(
+                [m["num_valid_samples"] for m in list_of_val_metrics]
+            )
+            val_metrics = RMValMetrics(
+                val_loss=sum(
+                    [
+                        m["val_loss"] * m["num_valid_samples"]
+                        for m in list_of_val_metrics
+                    ]
+                )
+                / sum_num_valid_samples,
+                accuracy=sum(
+                    [
+                        m["accuracy"] * m["num_valid_samples"]
+                        for m in list_of_val_metrics
+                    ]
+                )
+                / sum_num_valid_samples,
+                rewards_chosen_mean=sum(
+                    [
+                        m["rewards_chosen_mean"] * m["num_valid_samples"]
+                        for m in list_of_val_metrics
+                    ]
+                )
+                / sum_num_valid_samples,
+                rewards_rejected_mean=sum(
+                    [
+                        m["rewards_rejected_mean"] * m["num_valid_samples"]
+                        for m in list_of_val_metrics
+                    ]
+                )
+                / sum_num_valid_samples,
+                num_valid_samples=sum_num_valid_samples,
+            )
+        else:
+            warnings.warn(
+                "No validation metrics were collected."
+                " This is likely because there were no valid samples in the validation set."
+            )
+            val_metrics = RMValMetrics(
+                val_loss=0.0,
+                accuracy=0.0,
+                rewards_chosen_mean=0.0,
+                rewards_rejected_mean=0.0,
+                num_valid_samples=0.0,
+            )
 
         # Calculate validation metrics
         policy.prepare_for_training()
@@ -330,17 +365,20 @@ def validate(
     timing_metrics = timer.get_timing_metrics(reduction_op="sum")
     validation_time = timing_metrics.get("total_validation_time", 0)
 
-    if len(val_metrics) == 0:
-        warnings.warn(
-            "No validation metrics were collected."
-            " This is likely because there were no valid samples in the validation set."
-        )
-
-    else:
+    if num_valid_batches > 0:
         # Print summary of validation results
         print("\n📊 Validation Results:")
-        print(f"    • Validation loss: {float(val_metrics['loss']):.4f}")
-        print(f"    • Validation accuracy: {float(val_metrics['accuracy']):.4f}")
+        print(f"    • Validation loss: {val_metrics['val_loss']:.4f}")
+        print(f"    • Validation accuracy: {val_metrics['accuracy']:.4f}")
+        print(
+            f"    • Validation rewards chosen mean: {val_metrics['rewards_chosen_mean']:.4f}"
+        )
+        print(
+            f"    • Validation rewards rejected mean: {val_metrics['rewards_rejected_mean']:.4f}"
+        )
+        print(
+            f"    • Validation num valid samples: {val_metrics['num_valid_samples']:.0f}"
+        )
 
         # Print timing information
         print("\n  ⏱️  Validation Timing:")
@@ -353,7 +391,7 @@ def validate(
     return val_metrics, timing_metrics
 
 
-def dpo_train(
+def rm_train(
     policy,
     train_dataloader,
     val_dataloader,
@@ -361,69 +399,94 @@ def dpo_train(
     loss_fn,
     master_config,
     logger,
+    rm_task_spec,
     checkpointer,
-    dpo_save_state: DPOSaveState,
-) -> None:
-    # Run dpo training
+    rm_save_state,
+):
+    # Run basic rm training
     timer = Timer()
 
-    if dpo_save_state is None:
-        dpo_save_state = _default_dpo_save_state()
+    if rm_save_state is None:
+        rm_save_state = _default_rm_save_state()
         current_epoch = 0
         current_step = 0
         total_steps = 0
     else:
-        current_epoch = dpo_save_state["epoch"]
-        current_step = dpo_save_state["step"]
-        total_steps = dpo_save_state["total_steps"]
+        current_epoch = rm_save_state["epoch"]
+        current_step = rm_save_state["step"]
+        total_steps = rm_save_state["total_steps"]
 
-    dpo_config = master_config["dpo"]
+    rm_config = master_config["rm"]
     # Validation configuration
-    val_period = dpo_config["val_period"]
-    val_at_start = dpo_config["val_at_start"]
-    max_num_epochs = dpo_config["max_num_epochs"]
+    val_period = rm_config["val_period"]
+    val_at_start = rm_config["val_at_start"]
+    max_num_epochs = rm_config["max_num_epochs"]
 
     # Run validation at the start if configured
     if val_at_start and total_steps == 0:
         print("\n🔍 Running initial validation...")
-        validation_result = validate(
+        val_metrics, validation_timings = validate(
             policy,
             val_dataloader,
             tokenizer,
             loss_fn,
             step=0,
             master_config=master_config,
-            val_batches=dpo_config["val_batches"],
-            val_batch_size=dpo_config["val_global_batch_size"],
-            val_mbs=dpo_config["val_micro_batch_size"],
+            rm_task_spec=rm_task_spec,
+            val_batches=rm_config["val_batches"],
+            val_batch_size=rm_config["val_global_batch_size"],
+            val_mbs=rm_config["val_micro_batch_size"],
         )
-        if validation_result is not None:
-            val_metrics, validation_timings = validation_result
-        else:
-            val_metrics, validation_timings = None, None
 
         logger.log_metrics(val_metrics, total_steps, prefix="validation")
         logger.log_metrics(validation_timings, total_steps, prefix="timing/validation")
 
     policy.prepare_for_training()
 
-    while (
-        current_epoch < max_num_epochs
-        and total_steps < master_config["dpo"]["max_num_steps"]
+    while current_epoch < max_num_epochs and (
+        master_config["rm"]["max_num_steps"] == -1
+        or total_steps < master_config["rm"]["max_num_steps"]
     ):
         print(f"\n{'=' * 25} Epoch {current_epoch + 1}/{max_num_epochs} {'=' * 25}")
 
-        for batch in add_ref_logprobs_to_data(train_dataloader, policy, master_config):
+        for batch in train_dataloader:
             print(
-                f"\n{'=' * 25} Step {current_step + 1}/{min(len(train_dataloader), master_config['dpo']['max_num_steps'])} {'=' * 25}"
+                f"\n{'=' * 25} Step {current_step + 1}/{min(len(train_dataloader), master_config['rm']['max_num_steps'] if master_config['rm']['max_num_steps'] != -1 else len(train_dataloader))} {'=' * 25}"
             )
             maybe_gpu_profile_step(policy, total_steps + 1)
             val_metrics, validation_timings = None, None
 
             with timer.time("total_step_time"):
+                # Prepare batch and generate responses
+                print("▶ Preparing batch...")
+                with timer.time("data_processing"):
+                    ## add loss mask based on role to every message
+                    add_loss_mask_to_message_log(
+                        batch["message_log"],
+                        roles_to_train_on=["assistant"],
+                    )
+
+                    cat_and_padded, input_lengths = batched_message_log_to_flat_message(
+                        batch["message_log"],
+                        pad_value_dict={"token_ids": tokenizer.pad_token_id},
+                        make_sequence_length_divisible_by=master_config["policy"][
+                            "make_sequence_length_divisible_by"
+                        ],
+                    )
+
+                    train_data: BatchedDataDict = BatchedDataDict(
+                        {
+                            "input_ids": cat_and_padded["token_ids"],
+                            "input_lengths": input_lengths,
+                            "token_mask": cat_and_padded["token_loss_mask"],
+                            "sample_mask": batch["loss_multiplier"],
+                        }
+                    )
+
                 print("▶ Taking a training step...")
+
                 train_results = policy.train(
-                    batch,
+                    train_data,
                     loss_fn,
                     eval_mode=False,
                     ## NOTE: we double the batch size here because each preference example corresponds to a pair of
@@ -432,30 +495,28 @@ def dpo_train(
                     mbs=master_config["policy"]["train_micro_batch_size"] * 2,
                 )
 
-                is_last_step = total_steps + 1 >= master_config["dpo"][
-                    "max_num_steps"
-                ] or (
+                is_last_step = (
+                    master_config["rm"]["max_num_steps"] != -1
+                    and total_steps + 1 >= master_config["rm"]["max_num_steps"]
+                ) or (
                     current_epoch + 1 == max_num_epochs
                     and current_step + 1 == len(train_dataloader)
                 )
 
                 # Run validation if it's a validation step
                 if val_period > 0 and (total_steps + 1) % val_period == 0:
-                    validation_result = validate(
+                    val_metrics, validation_timings = validate(
                         policy,
                         val_dataloader,
                         tokenizer,
                         loss_fn,
                         step=total_steps + 1,
                         master_config=master_config,
-                        val_batches=dpo_config["val_batches"],
-                        val_batch_size=dpo_config["val_global_batch_size"],
-                        val_mbs=dpo_config["val_micro_batch_size"],
+                        rm_task_spec=rm_task_spec,
+                        val_batches=rm_config["val_batches"],
+                        val_batch_size=rm_config["val_global_batch_size"],
+                        val_mbs=rm_config["val_micro_batch_size"],
                     )
-                    if validation_result is not None:
-                        val_metrics, validation_timings = validation_result
-                    else:
-                        val_metrics, validation_timings = None, None
                     logger.log_metrics(
                         validation_timings, total_steps + 1, prefix="timing/validation"
                     )
@@ -464,26 +525,27 @@ def dpo_train(
                     )
 
                 ## Checkpointing
-                dpo_save_state["consumed_samples"] += master_config["policy"][
+                rm_save_state["consumed_samples"] += master_config["policy"][
                     "train_global_batch_size"
                 ]
                 if master_config["checkpointing"]["enabled"] and (
                     is_last_step
                     or (total_steps + 1) % master_config["checkpointing"]["save_period"]
                     == 0
-                ):  # +1 because step is 0-indexed
-                    dpo_save_state["step"] = (current_step + 1) % len(train_dataloader)
-                    dpo_save_state["total_steps"] = total_steps + 1
-                    dpo_save_state["epoch"] = current_epoch
+                ):
+                    ## +1 because step is 0-indexed
+                    rm_save_state["step"] = (current_step + 1) % len(train_dataloader)
+                    rm_save_state["total_steps"] = total_steps + 1
+                    rm_save_state["epoch"] = current_epoch
                     if val_metrics is not None:
-                        dpo_save_state["val_loss"] = val_metrics["loss"]
-                    elif "val_loss" in dpo_save_state:
-                        del dpo_save_state["val_loss"]
+                        rm_save_state["val_loss"] = val_metrics["val_loss"]
+                    elif "val_loss" in rm_save_state:
+                        del rm_save_state["val_loss"]
 
                     if master_config["checkpointing"]["metric_name"] is not None:
                         if (
                             master_config["checkpointing"]["metric_name"]
-                            not in dpo_save_state
+                            not in rm_save_state
                         ):
                             warnings.warn(
                                 f"You asked to save checkpoints based on {master_config['checkpointing']['metric_name']} but the metric is not found in the save state. "
@@ -494,8 +556,9 @@ def dpo_train(
                     with timer.time("checkpointing"):
                         print(f"Saving checkpoint for step {total_steps + 1}...")
                         checkpoint_path = checkpointer.init_tmp_checkpoint(
-                            total_steps + 1, dpo_save_state, master_config
+                            total_steps + 1, rm_save_state, master_config
                         )
+
                         policy.save_checkpoint(
                             weights_path=os.path.join(
                                 checkpoint_path, "policy", "weights"
@@ -528,6 +591,15 @@ def dpo_train(
 
             print("\n📊 Training Results:")
             print(f"  • Loss: {float(metrics['loss']):.4f}")
+            print(f"  • Accuracy: {float(metrics['accuracy']):.4f}")
+            print(
+                f"  • Rewards chosen mean: {float(metrics['rewards_chosen_mean']):.4f}"
+            )
+            print(
+                f"  • Rewards rejected mean: {float(metrics['rewards_rejected_mean']):.4f}"
+            )
+            print(f"  • Num valid samples: {float(metrics['num_valid_samples']):.0f}")
+
             print("\n⏱️  Timing:")
             # Display total time first, separately
             total_time = timing_metrics.get("total_step_time", 0)
@@ -548,7 +620,10 @@ def dpo_train(
             current_step += 1
             total_steps += 1
 
-            if total_steps >= master_config["dpo"]["max_num_steps"]:
+            if (
+                master_config["rm"]["max_num_steps"] != -1
+                and total_steps >= master_config["rm"]["max_num_steps"]
+            ):
                 return
 
         current_epoch += 1
