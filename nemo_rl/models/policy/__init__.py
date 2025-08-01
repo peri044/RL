@@ -34,6 +34,11 @@ class SequencePackingConfig(TypedDict):
     algorithm: str
 
 
+class RewardModelConfig(TypedDict):
+    enabled: bool
+    reward_model_type: str
+
+
 class MegatronOptimizerConfig(TypedDict):
     optimizer: str
     lr: float
@@ -85,6 +90,9 @@ class MegatronConfig(TypedDict):
     context_parallel_size: int
     pipeline_dtype: str
     sequence_parallel: bool
+    freeze_moe_router: bool
+    expert_tensor_parallel_size: int
+    expert_model_parallel_size: int
 
     optimizer: NotRequired[MegatronOptimizerConfig]
     scheduler: NotRequired[MegatronSchedulerConfig]
@@ -104,6 +112,7 @@ class PytorchOptimizerConfig(TypedDict):
 class SinglePytorchSchedulerConfig(TypedDict):
     name: str
     kwargs: dict[str, Any]
+    milestones: NotRequired[list[int]]  # Used in SequentialLR configuration
 
 
 SchedulerMilestones = dict[str, list[int]]
@@ -134,6 +143,7 @@ class PolicyConfig(TypedDict):
         int
     ]  # used in static batched (framework) generation
     precision: str
+    reward_model_cfg: NotRequired[RewardModelConfig]
     dtensor_cfg: DTensorConfig
     megatron_cfg: NotRequired[MegatronConfig]
     dynamic_batching: DynamicBatchingConfig
@@ -143,7 +153,5 @@ class PolicyConfig(TypedDict):
     max_grad_norm: NotRequired[Union[float, int]]
     drop_last_validation: NotRequired[bool]
     refit_buffer_size_gb: NotRequired[float]
-    optimizer: NotRequired[PytorchOptimizerConfig] = None
-    scheduler: NotRequired[list[SinglePytorchSchedulerConfig] | SchedulerMilestones] = (
-        None
-    )
+    optimizer: NotRequired[PytorchOptimizerConfig]
+    scheduler: NotRequired[list[SinglePytorchSchedulerConfig] | SchedulerMilestones]
