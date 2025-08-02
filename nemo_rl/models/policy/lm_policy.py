@@ -321,11 +321,10 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         batch_size = gbs or self.cfg["train_global_batch_size"]
         micro_batch_size = mbs or self.cfg["train_micro_batch_size"]
 
-        # Shard and replicate the batch
         allow_uneven_shards = False
-        total_batch_size = data.get_total_batch_size()
-        if total_batch_size % batch_size != 0:
-            batch_size = total_batch_size
+        # When drop_last_val = False in the dataloader, the last batch will be smaller than batch_size. So we allow uneven shards.
+        if data.size < batch_size:
+            batch_size = data.size
             allow_uneven_shards = True
 
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")

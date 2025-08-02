@@ -188,30 +188,11 @@ class BatchedDataDict(UserDict, Generic[DictT]):
 
         return chunked_batch
 
-    def get_total_batch_size(self: Self) -> int:
-        """Get the total batch size of the batch.
-
-        Returns:
-            int: The total batch size.
-        """
-        batch_sizes = set()
-        for val in self.data.values():
-            if isinstance(val, torch.Tensor):
-                batch_sizes.add(val.size(0))
-            else:
-                batch_sizes.add(len(val))
-
-        assert len(batch_sizes) == 1, (
-            "Batch sizes are not the same across all the entries in the batch"
-        )
-        return batch_sizes.pop()
-
     def reorder_data(self, reorded_indices: list[int]):
         """Reorders the data along the batch dimension by the given indices."""
-        total_batch_size = self.get_total_batch_size()
-
-        indices = range(total_batch_size)
-        reordered = sorted(zip(reorded_indices, indices), key=lambda pair: pair[0])
+        reordered = sorted(
+            zip(reorded_indices, range(self.size)), key=lambda pair: pair[0]
+        )
         reordered_indices = [idx[1] for idx in reordered]
 
         for k, v in self.data.items():
@@ -310,20 +291,20 @@ class BatchedDataDict(UserDict, Generic[DictT]):
             "dynamic_batching_args and sequence_packing_args cannot be passed together"
         )
         # Get the total batch size
-        total_batch_size = self.get_total_batch_size()
+        data_size = self.size
         if batch_size is None:
-            batch_size = total_batch_size
+            batch_size = data_size
 
         # Validate that our batch size parameters are compatible with the data dimensions
-        assert total_batch_size % batch_size == 0, (
-            f"Total batch size ({total_batch_size}) is not a multiple of batch_size ({batch_size})"
+        assert data_size % batch_size == 0, (
+            f"Size of data ({data_size}) is not a multiple of batch_size ({batch_size})"
         )
         if not allow_uneven_shards:
             assert batch_size % shards == 0, (
                 f"Batch size ({batch_size}) is not a multiple of shards ({shards})"
             )
 
-        num_chunks = total_batch_size // batch_size
+        num_chunks = data_size // batch_size
         # Calculate shard size, rounding up if not evenly divisible
         shard_size = (
             (batch_size + shards - 1) // shards
@@ -487,10 +468,10 @@ class BatchedDataDict(UserDict, Generic[DictT]):
                 shard_start = chunk_start + shard_idx * shard_size
                 shard_end = chunk_start + (shard_idx + 1) * shard_size
                 if allow_uneven_shards:
-                    # Cap the end index at the total batch size for the last shard
-                    # or if shard_end calculation goes beyond total_batch_size
-                    shard_start = min(shard_start, total_batch_size)
-                    shard_end = min(shard_end, total_batch_size)
+                    # Cap the end index at the data size for the last shard
+                    # or if shard_end calculation goes beyond data_size
+                    shard_start = min(shard_start, data_size)
+                    shard_end = min(shard_end, data_size)
                 indices = torch.arange(shard_start, shard_end)
 
                 for k in data:
@@ -736,14 +717,19 @@ class BatchedDataDict(UserDict, Generic[DictT]):
     @property
     def size(self) -> int:
         """Get the batch size of the batch."""
-        # Get the first key and use its size as the batch size
-        # This assumes all keys have the same batch size
-        key = next(iter(self.data))
         if not self.data:
             return 0
-        if not torch.is_tensor(self.data[key]):
-            return len(self.data[key])
-        return self.data[key].shape[0]  # type: ignore # it's a tensor here
+        batch_sizes = set()
+        for val in self.data.values():
+            if isinstance(val, torch.Tensor):
+                batch_sizes.add(val.size(0))
+            else:
+                batch_sizes.add(len(val))
+
+        assert len(batch_sizes) == 1, (
+            "Batch sizes are not the same across all the entries in the batch"
+        )
+        return batch_sizes.pop()
 
     def to(self, device: str | torch.device) -> Self:
         """Move tensors in batched dict to device."""

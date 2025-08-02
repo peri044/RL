@@ -180,7 +180,7 @@ def setup(
                 "make_sequence_length_divisible_by"
             ],
         ),
-        drop_last=policy_config.get("drop_last_validation", False),
+        drop_last=policy_config.get("val_drop_last", False),
     )
 
     # ==========================
