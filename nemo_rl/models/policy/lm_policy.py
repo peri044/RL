@@ -29,7 +29,11 @@ from nemo_rl.distributed.batched_data_dict import (
 )
 from nemo_rl.distributed.named_sharding import NamedSharding
 from nemo_rl.distributed.virtual_cluster import RayVirtualCluster
-from nemo_rl.distributed.worker_groups import RayWorkerBuilder, RayWorkerGroup
+from nemo_rl.distributed.worker_groups import (
+    MultiWorkerFuture,
+    RayWorkerBuilder,
+    RayWorkerGroup,
+)
 from nemo_rl.models.generation.interfaces import (
     GenerationDatumSpec,
     GenerationInterface,
@@ -316,66 +320,94 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         eval_mode: bool = False,
         gbs: Optional[int] = None,
         mbs: Optional[int] = None,
+        is_preference_model: Optional[bool] = False,
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
         batch_size = gbs or self.cfg["train_global_batch_size"]
         micro_batch_size = mbs or self.cfg["train_micro_batch_size"]
-
         allow_uneven_shards = False
-        # When drop_last_val = False in the dataloader, the last batch will be smaller than batch_size. So we allow uneven shards.
-        if data.size < batch_size:
-            batch_size = data.size
-            allow_uneven_shards = True
-
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
-        if self.use_dynamic_batches:
-            self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
-                "dynamic_batching"
-            ]["train_mb_tokens"]
-            sharded_data, _ = data.shard_by_batch_size(
-                dp_size,
-                batch_size=batch_size,
-                dynamic_batching_args=self.dynamic_batching_args,
-                allow_uneven_shards=allow_uneven_shards,
+
+        # When drop_last_val = False in the dataloader, the last batch will be smaller than batch_size. So we allow uneven shards.
+        if data.size < batch_size and is_preference_model:
+            # We don't shard the small last batch for preference model and let all the workers run this small batch.
+            # TODO: One worker should be enough to run the small batch, but the process hangs when run_single_worker_single_data is used.
+            # Instead, we use run_all_workers_single_data and gather the results from worker_idx=0
+            batch_size = data.size
+            micro_batch_size = (
+                batch_size if micro_batch_size > batch_size else micro_batch_size
             )
-        elif self.use_sequence_packing:
-            self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg[
-                "sequence_packing"
-            ]["train_mb_tokens"]
-            sharded_data, _ = data.shard_by_batch_size(
-                dp_size,
-                batch_size=batch_size,
-                sequence_packing_args=self.sequence_packing_args,
+            object_refs = self.worker_group.run_all_workers_single_data(
+                "train",
+                data=data,
+                loss_fn=loss_fn,
+                eval_mode=eval_mode,
+                # Note: Within each worker, the local_gbs = gbs/dp_size. We multiply the small batch size by dp_size to balance that out.
+                # The idea is there will be only 1 local batch = small batch size and batch_size is divisible by micro_batch_size.
+                gbs=batch_size * dp_size,
+                mbs=micro_batch_size,
+            )
+            futures = MultiWorkerFuture(
+                futures=object_refs,
+                called_workers=list(range(len(self.worker_group.workers))),
+                return_from_workers=[
+                    0
+                ],  # only return the result from the first worker since same data is run on all workers
             )
         else:
-            sharded_data = data.shard_by_batch_size(
-                dp_size,
-                batch_size=batch_size,
-                allow_uneven_shards=allow_uneven_shards,
-            )
+            if data.size < batch_size:
+                batch_size = data.size
+                allow_uneven_shards = True
 
-        # Train each shard in parallel
-        futures = self.worker_group.run_all_workers_sharded_data(
-            "train",
-            data=sharded_data,
-            in_sharded_axes=["data_parallel"],
-            replicate_on_axes=[
-                "context_parallel",
-                "tensor_parallel",
-                "pipeline_parallel",
-            ],
-            output_is_replicated=[
-                "context_parallel",
-                "tensor_parallel",
-                "pipeline_parallel",
-            ],
-            common_kwargs={
-                "loss_fn": loss_fn,
-                "eval_mode": eval_mode,
-                "gbs": batch_size,
-                "mbs": micro_batch_size,
-            },
-        )
+            if self.use_dynamic_batches:
+                self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
+                    "dynamic_batching"
+                ]["train_mb_tokens"]
+                sharded_data, _ = data.shard_by_batch_size(
+                    dp_size,
+                    batch_size=batch_size,
+                    dynamic_batching_args=self.dynamic_batching_args,
+                    allow_uneven_shards=allow_uneven_shards,
+                )
+            elif self.use_sequence_packing:
+                self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg[
+                    "sequence_packing"
+                ]["train_mb_tokens"]
+                sharded_data, _ = data.shard_by_batch_size(
+                    dp_size,
+                    batch_size=batch_size,
+                    sequence_packing_args=self.sequence_packing_args,
+                )
+            else:
+                sharded_data = data.shard_by_batch_size(
+                    dp_size,
+                    batch_size=batch_size,
+                    allow_uneven_shards=allow_uneven_shards,
+                )
+
+                # Train each shard in parallel
+                futures = self.worker_group.run_all_workers_sharded_data(
+                    "train",
+                    data=sharded_data,
+                    in_sharded_axes=["data_parallel"],
+                    replicate_on_axes=[
+                        "context_parallel",
+                        "tensor_parallel",
+                        "pipeline_parallel",
+                    ],
+                    output_is_replicated=[
+                        "context_parallel",
+                        "tensor_parallel",
+                        "pipeline_parallel",
+                    ],
+                    common_kwargs={
+                        "loss_fn": loss_fn,
+                        "eval_mode": eval_mode,
+                        "gbs": batch_size,
+                        "mbs": micro_batch_size,
+                    },
+                )
+
         results = self.worker_group.get_all_worker_results(futures)
         # Aggregate the results
         aggregated_results = {
