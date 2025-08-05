@@ -320,19 +320,18 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         eval_mode: bool = False,
         gbs: Optional[int] = None,
         mbs: Optional[int] = None,
-        is_preference_model: Optional[bool] = False,
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
         batch_size = gbs or self.cfg["train_global_batch_size"]
         micro_batch_size = mbs or self.cfg["train_micro_batch_size"]
-        allow_uneven_shards = False
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
 
-        # When drop_last_val = False in the dataloader, the last batch will be smaller than batch_size. So we allow uneven shards.
-        if data.size < batch_size and is_preference_model:
-            # We don't shard the small last batch for preference model and let all the workers run this small batch.
-            # TODO: One worker should be enough to run the small batch, but the process hangs when run_single_worker_single_data is used.
-            # Instead, we use run_all_workers_single_data and gather the results from worker_idx=0
+        # When drop_last_val = False in the dataloader, the last batch will be smaller than batch_size.
+        if data.size < batch_size:
+            # We avoid sharding the final small batch and instead have all workers process it.
+            # TODO: Ideally, a single worker should suffice to handle the small batch,
+            # but using run_single_worker_single_data causes the process to hang.
+            # As a workaround, we use run_all_workers_single_data and collect the result from worker_idx=0.
             batch_size = data.size
             micro_batch_size = (
                 batch_size if micro_batch_size > batch_size else micro_batch_size
@@ -342,10 +341,11 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 data=data,
                 loss_fn=loss_fn,
                 eval_mode=eval_mode,
-                # Note: Within each worker, the local_gbs = gbs/dp_size. We multiply the small batch size by dp_size to balance that out.
-                # The idea is there will be only 1 local batch = small batch size and batch_size is divisible by micro_batch_size.
+                # Note: On each worker, local_gbs = gbs / dp_size.
+                # To handle the small batch properly, we scale its size by dp_size so each worker receives exactly one local batch.
+                # We set mbs = 1 to ensure that the small batch size is divisible by the micro_batch_size.
                 gbs=batch_size * dp_size,
-                mbs=micro_batch_size,
+                mbs=1,
             )
             futures = MultiWorkerFuture(
                 futures=object_refs,
@@ -355,10 +355,6 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 ],  # only return the result from the first worker since same data is run on all workers
             )
         else:
-            if data.size < batch_size:
-                batch_size = data.size
-                allow_uneven_shards = True
-
             if self.use_dynamic_batches:
                 self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
                     "dynamic_batching"
@@ -367,7 +363,6 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                     dp_size,
                     batch_size=batch_size,
                     dynamic_batching_args=self.dynamic_batching_args,
-                    allow_uneven_shards=allow_uneven_shards,
                 )
             elif self.use_sequence_packing:
                 self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg[
@@ -382,7 +377,6 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 sharded_data = data.shard_by_batch_size(
                     dp_size,
                     batch_size=batch_size,
-                    allow_uneven_shards=allow_uneven_shards,
                 )
 
                 # Train each shard in parallel
