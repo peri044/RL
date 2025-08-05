@@ -51,7 +51,7 @@ class CheckpointingConfig(TypedDict):
     metric_name: str | None
     higher_is_better: bool
     save_period: int
-    keep_top_k: Optional[int]
+    keep_top_k: NotRequired[int]
     model_name: NotRequired[str]
 
 
