@@ -320,6 +320,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         eval_mode: bool = False,
         gbs: Optional[int] = None,
         mbs: Optional[int] = None,
+        is_preference_model: bool = False,
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
         batch_size = gbs or self.cfg["train_global_batch_size"]
@@ -343,9 +344,9 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 eval_mode=eval_mode,
                 # Note: On each worker, local_gbs = gbs / dp_size.
                 # To handle the small batch properly, we scale its size by dp_size so each worker receives exactly one local batch.
-                # We set mbs = 1 to ensure that the small batch size is divisible by the micro_batch_size.
+                # We set mbs = 1 (or 2 for preference model) to ensure that the small batch size is divisible by the micro_batch_size.
                 gbs=batch_size * dp_size,
-                mbs=1,
+                mbs=2 if is_preference_model else 1,
             )
             futures = MultiWorkerFuture(
                 futures=object_refs,
