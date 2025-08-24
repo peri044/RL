@@ -15,6 +15,7 @@
 from nemo_rl.data.eval_datasets.aime2024 import AIME2024Dataset
 from nemo_rl.data.eval_datasets.aime2025 import AIME2025Dataset
 from nemo_rl.data.eval_datasets.gpqa import GPQADataset
+from nemo_rl.data.eval_datasets.gsm8k import GSM8KEvalDataset
 from nemo_rl.data.eval_datasets.local_math_dataset import LocalMathDataset
 from nemo_rl.data.eval_datasets.math import MathDataset
 from nemo_rl.data.eval_datasets.mmlu import MMLUDataset
@@ -73,6 +74,11 @@ def load_eval_dataset(data_config):
     elif dataset_name == "math500":
         base_dataset = MathDataset(
             variant="math_500_test",
+            prompt_file=data_config["prompt_file"],
+            system_prompt_file=data_config["system_prompt_file"],
+        )
+    elif dataset_name == "gsm8k":
+        base_dataset = GSM8KEvalDataset(
             prompt_file=data_config["prompt_file"],
             system_prompt_file=data_config["system_prompt_file"],
         )

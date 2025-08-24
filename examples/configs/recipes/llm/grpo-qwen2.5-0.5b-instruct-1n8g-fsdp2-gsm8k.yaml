@@ -10,7 +10,7 @@ grpo:
   val_period: 10
   val_at_start: false
   max_val_samples: 21104
-  val_batch_size: 16
+  val_batch_size: 1319
   seed: 42
 
 loss_fn:
