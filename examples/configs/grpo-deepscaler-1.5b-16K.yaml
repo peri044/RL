@@ -8,7 +8,7 @@ loss_fn:
 
 policy:
   max_total_sequence_length: 16384
-
+  val_drop_last: true
 
   dynamic_batching:
     enabled: False

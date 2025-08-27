@@ -203,7 +203,7 @@ def setup(
             batch_size=grpo_config["val_batch_size"],
             shuffle=False,
             collate_fn=rl_collate_fn,
-            drop_last=policy_config.get("val_drop_last", True),
+            drop_last=policy_config["val_drop_last"],
         )
         print(f"  ✓ Validation dataloader loaded with {len(val_dataset)} samples")
 

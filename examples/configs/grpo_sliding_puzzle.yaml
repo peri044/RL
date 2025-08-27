@@ -18,7 +18,7 @@ checkpointing:
 policy:
   model_name: "Qwen/Qwen2.5-1.5B-Instruct"
   max_total_sequence_length: 3072
-
+  val_drop_last: true
   generation:
     backend: "vllm"
     max_new_tokens: ${policy.max_total_sequence_length}

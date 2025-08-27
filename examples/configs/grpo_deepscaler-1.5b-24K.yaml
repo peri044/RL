@@ -8,7 +8,7 @@ loss_fn:
 
 policy:
   max_total_sequence_length: 24576
-
+  val_drop_last: true
   dtensor_cfg:
     enabled: true
     cpu_offload: true

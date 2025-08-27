@@ -320,14 +320,14 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         eval_mode: bool = False,
         gbs: Optional[int] = None,
         mbs: Optional[int] = None,
-        is_preference_model: bool = False,
+        mbs_last_val: int = 1,
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
         batch_size = gbs or self.cfg["train_global_batch_size"]
         micro_batch_size = mbs or self.cfg["train_micro_batch_size"]
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
 
-        # When drop_last_val = False in the dataloader, the last batch will be smaller than batch_size.
+        # When drop_last_val = False in the dataloader, the last batch can be smaller than batch_size.
         if data.size < batch_size:
             # We avoid sharding the final small batch and instead have all workers process it.
             # TODO: Ideally, a single worker should suffice to handle the small batch,
@@ -336,6 +336,13 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             batch_size = data.size
             micro_batch_size = (
                 batch_size if micro_batch_size > batch_size else micro_batch_size
+            )
+            # mbs_last_val=2 is used for preference models where data comes in pairs (chosen/rejected)
+            # batch_size must be even to ensure proper pairing and microbatch divisibility
+            assert not (mbs_last_val == 2 and batch_size % 2 != 0), (
+                f"When mbs_last_val=2 (preference model training), batch_size must be even. "
+                f"Got batch_size={batch_size}. Preference data comes in pairs (chosen/rejected) "
+                f"and requires even batch sizes for proper microbatch processing."
             )
             object_refs = self.worker_group.run_all_workers_single_data(
                 "train",
@@ -346,7 +353,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 # To handle the small batch properly, we scale its size by dp_size so each worker receives exactly one local batch.
                 # We set mbs = 1 (or 2 for preference model) to ensure that the small batch size is divisible by the micro_batch_size.
                 gbs=batch_size * dp_size,
-                mbs=2 if is_preference_model else 1,
+                mbs=mbs_last_val,
             )
             futures = MultiWorkerFuture(
                 futures=object_refs,

@@ -26,6 +26,7 @@ checkpointing:
   save_period: 10
 policy:
   model_name: Qwen/Qwen2.5-7B-Instruct
+  val_drop_last: true
   tokenizer:
     name: Qwen/Qwen2.5-7B-Instruct
   train_global_batch_size: 512

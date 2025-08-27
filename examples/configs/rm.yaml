@@ -33,7 +33,7 @@ policy:
   precision: "bfloat16"
   fsdp_offload_enabled: false
   activation_checkpointing_enabled: false
-
+  val_drop_last: true
   reward_model_cfg:
     enabled: true  # loads model as a Reward Model (do not change)
     reward_model_type: "bradley_terry"  # only "bradley_terry" is currently supported
