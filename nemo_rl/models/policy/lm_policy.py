@@ -384,6 +384,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                     0
                 ],  # only return the result from the first worker since same data is run on all workers
             )
+            sharded_data = [data]
         else:
             if self.use_dynamic_batches:
                 self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
