@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import warnings
 from collections import defaultdict
 from typing import Any, Optional, Union
 
 import numpy as np
 import ray
 from ray.util.queue import Queue as RayQueue
-from transformers import PreTrainedTokenizerBase
+from transformers import AutoProcessor, PreTrainedTokenizerBase
 
 from nemo_rl.algorithms.interfaces import LossFunction
 from nemo_rl.distributed.batched_data_dict import (
@@ -45,6 +46,11 @@ from nemo_rl.models.policy.interfaces import (
     LogprobOutputSpec,
     ReferenceLogprobOutputSpec,
 )
+from nemo_rl.utils.flops_tracker import (
+    FLOPTracker,
+    get_default_hf_config,
+    get_theoretical_tflops,
+)
 
 PathLike = Union[str, "os.PathLike[Any]"]
 
@@ -61,6 +67,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         weights_path: Optional[PathLike] = None,
         optimizer_path: Optional[PathLike] = None,
         init_reference_model: bool = True,
+        processor: Optional[AutoProcessor] = None,
     ):
         if weights_path:
             weights_path = os.path.abspath(weights_path)
@@ -72,7 +79,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         pp_size = 1
         cp_size = 1
 
-        megatron_enable = config.get("megatron_cfg", {}).get("enabled", False)
+        megatron_enable = "megatron_cfg" in config and config["megatron_cfg"]["enabled"]
         if megatron_enable:
             worker_builder_cls = (
                 "nemo_rl.models.policy.megatron_policy_worker.MegatronPolicyWorker"
@@ -87,9 +94,16 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 "Please either set policy.megatron_cfg.enabled=true to use Megatron training backend "
                 "or set policy.dtensor_cfg.enabled=true to use DTensor training backend."
             )
-            worker_builder_cls = (
-                "nemo_rl.models.policy.dtensor_policy_worker.DTensorPolicyWorker"
-            )
+
+            # Check if _v2 is enabled in dtensor_cfg (defaults to False for backward compatibility)
+            use_v2 = config["dtensor_cfg"].get("_v2", False)
+            if use_v2:
+                worker_builder_cls = "nemo_rl.models.policy.dtensor_policy_worker_v2.DTensorPolicyWorkerV2"
+            else:
+                worker_builder_cls = (
+                    "nemo_rl.models.policy.dtensor_policy_worker.DTensorPolicyWorker"
+                )
+
             tp_size = config["dtensor_cfg"]["tensor_parallel_size"]
             cp_size = config["dtensor_cfg"]["context_parallel_size"]
 
@@ -115,6 +129,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             worker_builder_cls,
             config,
             tokenizer=tokenizer,
+            processor=processor,
             init_optimizer=init_optimizer,
             weights_path=weights_path,
             optimizer_path=optimizer_path,
@@ -129,7 +144,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             name_prefix=name_prefix,
             workers_per_node=workers_per_node,
             sharding_annotations=self.sharding_annotations,
-            env_vars=env_vars,
+            env_vars=env_vars or {},
         )
 
         if config["dynamic_batching"]["enabled"]:
@@ -151,13 +166,20 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         else:
             self.use_dynamic_batches = False
 
+        # initialize FLOPs tracker
+        try:
+            self.flops_tracker = FLOPTracker.from_config(
+                config["model_name"], get_default_hf_config(config["model_name"])
+            )
+        except ValueError as e:
+            self.flops_tracker = None
+            print(f"FLOPS tracker not supported for model {config['model_name']}: {e}")
+
         if config["sequence_packing"]["enabled"]:
             self.use_sequence_packing = True
             self.sequence_packing_args: SequencePackingArgs = {
                 "train_mb_tokens": config["sequence_packing"]["train_mb_tokens"],
-                "logprob_mb_tokens": config["sequence_packing"].get(
-                    "logprob_mb_tokens", None
-                ),
+                "logprob_mb_tokens": config["sequence_packing"]["logprob_mb_tokens"],
                 "algorithm": config["sequence_packing"]["algorithm"],
                 "input_key": "input_ids",
                 "input_lengths_key": "input_lengths",
@@ -410,12 +432,52 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                     },
                 )
 
+        if self.flops_tracker is not None:
+            self.flops_tracker.reset()
+            for shard in sharded_data:
+                input_lengths = shard["input_lengths"]
+                self.flops_tracker.track_batch(input_lengths.tolist())
+
+        # Train each shard in parallel
+        futures = self.worker_group.run_all_workers_sharded_data(
+            "train",
+            data=sharded_data,
+            in_sharded_axes=["data_parallel"],
+            replicate_on_axes=[
+                "context_parallel",
+                "tensor_parallel",
+                "pipeline_parallel",
+            ],
+            output_is_replicated=[
+                "context_parallel",
+                "tensor_parallel",
+                "pipeline_parallel",
+            ],
+            common_kwargs={
+                "loss_fn": loss_fn,
+                "eval_mode": eval_mode,
+                "gbs": batch_size,
+                "mbs": micro_batch_size,
+            },
+        )
         results = self.worker_group.get_all_worker_results(futures)
         # Aggregate the results
         aggregated_results = {
             "loss": results[0]["global_loss"],
             "grad_norm": results[0]["grad_norm"],
         }
+
+        if self.flops_tracker is not None:
+            aggregated_results["total_flops"] = self.flops_tracker.total_flops
+            aggregated_results["num_ranks"] = len(results)
+
+            try:
+                aggregated_results["theoretical_tflops"] = sum(
+                    get_theoretical_tflops(r["gpu_name"], r["model_dtype"])
+                    for r in results
+                )
+            except Exception as e:
+                warnings.warn(f"Error getting theoretical flops: {e}")
 
         # Aggregate metrics across all workers
         all_mb_metrics = defaultdict(list)
