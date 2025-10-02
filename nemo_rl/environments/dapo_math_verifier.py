@@ -260,7 +260,7 @@ def compute_score(
         pause_tokens_index: Indices of pause tokens
 
     Returns:
-        Reward score (1.0 for correct, -1.0 for incorrect)
+        Reward score (1.0 for correct, 0.0 for incorrect)
     """
     # Limit solution length for efficiency
     solution_str = solution_str[
