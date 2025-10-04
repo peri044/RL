@@ -1109,6 +1109,7 @@ def grpo_train(
                     "lr",
                     "wd",
                     "reward",
+                    "filtered_reward",
                     "global_valid_seqs",
                     "global_valid_toks",
                     "mean_prompt_length",
