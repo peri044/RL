@@ -23,17 +23,29 @@ uv run examples/run_grpo_math.py --config examples/configs/recipes/llm/dapo-qwen
 
 ## Dynamic Sampling
 
-Standard GRPO trains on all generated responses, even when they have identical rewards (zero gradient signal) within a prompt group of generations. Dynamic sampling filters to keep only groups with diverse rewards (`std > 0`), and accumulates them across batches until reaching the target batch size. 
+Standard GRPO trains on all generated responses, even when they have identical rewards (zero gradient signal) within a prompt group of generations. Dynamic sampling filters to keep only groups with diverse rewards (`std > 0`), and accumulates them across batches until reaching the target batch size. For implementation details, see the [`dynamic_sampling`](../../nemo_rl/algorithms/grpo.py) function.
 
 **Algorithm**: For each training step:
 
 1. Sample `dapo_batch_multiplier × num_prompts_per_step` prompts from the dataset. The default value of `dapo_batch_multiplier` is 3.
 2. Generate `num_generations_per_prompt` responses per prompt and compute rewards
-3. Calculate baseline and std for each prompt group
+3. Compute the baseline and standard deviation for each prompt group
 4. Filter prompt groups where `std > 0`
-5. Accumulate in cache until reaching the training batch size = `num_prompts_per_step × num_generations_per_prompt` samples is reached.
-6. You can accumulate until `max_num_gen_batches` number of batches is reached.
+5. Store these prompts in a cache until reaching the target training batch size of `num_prompts_per_step × num_generations_per_prompt` samples.
+6. Samples are accumulated until the maximum number of allowed batches (`max_num_gen_batches`) is reached. If the cache still does not meet the target training batch size at that point, an error is raised. To resolve this, consider adjusting parameters such as `num_prompts_per_step` or `num_generations_per_prompt` to increase sample diversity, or revisit the complexity of your data.
 7. Perform training on the collected samples with non-zero standard deviation
+
+## Reward Shaping
+DAPO introduces an overlong reward shaping mechanism to reduce reward noise and stabilize training. This approach penalizes responses that exceed a specified length threshold, helping to prevent the model from generating excessively long outputs while maintaining solution quality.
+
+For a detailed explanation of the overlong reward shaping mechanism, please refer to Section 3.4 of the [DAPO paper](https://arxiv.org/pdf/2503.14476). For implementation details, see the [`apply_reward_shaping`](../../nemo_rl/algorithms/reward_functions.py) function.
+
+> [!NOTE]
+> **Clip-Higher** and **Token-Level Policy Gradient Loss** are already supported in NeMo RL and can be configured through the `loss_fn` section of your experiment config:
+> - Set `ratio_clip_max` to enable Clip-Higher (e.g., `ratio_clip_max: 0.28`)
+> - Set `token_level_loss: true` to enable Token-Level Policy Gradient Loss
+> 
+> See the [DAPO example config](../../examples/configs/recipes/llm/dapo-qwen2.5-7b.yaml) for reference.
 
 
 ### Configuration
@@ -58,16 +70,17 @@ grpo:
 ```
 
 **Key Parameters:**
+- **`use_dynamic_sampling`**: When enabled, activates DAPO's dynamic sampling algorithm to filter and accumulate prompt groups with non-zero standard deviation
 - **`dapo_batch_multiplier`**: Factor that scales the initial prompt pool size for sampling
 - **`max_num_gen_batches`**: Maximum number of batches to be used for accumulating non-zero std prompts
 - **`reward_scaling`**: When enabled, maps binary rewards (1.0 for correct, 0.0 for incorrect) to configured values before applying reward shaping
-- **`reward_shaping`**: When enabled, applies penalties for responses exceeding max_response_length to reduce reward noise and stabilize training. For more details on the overlong reward shaping mechanism, please refer to Section 3.4 of the [DAPO paper](https://arxiv.org/pdf/2503.14476).
+- **`reward_shaping`**: When enabled, applies the overlong penalty mechanism described in the Reward Shaping section above. Responses exceeding `max_response_length - overlong_buffer_length` receive penalties proportional to their excess length, helping to reduce reward noise and stabilize training.
 
-> **Note**: When dynamic sampling is enabled, monitor the `filtered_reward` metric to track the average reward of the prompts with std > 0.
-
+> [!NOTE]
+> When dynamic sampling is enabled, monitor the `filtered_reward` metric to track the average reward of the prompts with std > 0.
 
 ## References
 
-- **DAPO Paper**: [Dynamic Sampling of Group Relative Policy Optimization (2025)](https://arxiv.org/pdf/2503.14476)
-- **GRPO Paper**: [Group Relative Policy Optimization (2024)](https://arxiv.org/abs/2402.03300)
+- **DAPO Paper**: [Decoupled Clip and Dynamic Sampling for Adaptive Policy Optimization](https://arxiv.org/pdf/2503.14476)
+- **GRPO Paper**: [Group Relative Policy Optimization](https://arxiv.org/abs/2402.03300)
 - **NeMo RL GRPO Guide**: [grpo.md](grpo.md)
