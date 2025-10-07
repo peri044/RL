@@ -190,8 +190,23 @@ def main() -> None:
 
     # Check if async mode is enabled
     if "async_grpo" in config["grpo"] and config["grpo"]["async_grpo"]["enabled"]:
-        if config["grpo"]["use_dynamic_sampling"]:
-            raise ValueError("Dynamic sampling is not supported with async GRPO")
+        # Async GRPO does not support dynamic sampling, reward scaling, or reward shaping (DAPO features)
+        unsupported_features = [
+            "use_dynamic_sampling",
+            "reward_scaling",
+            "reward_shaping",
+        ]
+
+        for feature in unsupported_features:
+            if feature not in config["grpo"]:
+                continue
+
+            if feature == "use_dynamic_sampling":
+                if config["grpo"][feature]:
+                    raise ValueError(f"{feature} is not supported with async GRPO")
+            else:
+                if config["grpo"][feature]["enabled"]:
+                    raise ValueError(f"{feature} is not supported with async GRPO")
 
         from nemo_rl.algorithms.grpo import async_grpo_train
 

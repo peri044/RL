@@ -32,7 +32,7 @@ Standard GRPO trains on all generated responses, even when they have identical r
 3. Compute the baseline and standard deviation for each prompt group
 4. Filter prompt groups where `std > 0`
 5. Store these prompts in a cache until reaching the target training batch size of `num_prompts_per_step × num_generations_per_prompt` samples.
-6. Samples are accumulated until the maximum number of allowed batches (`max_num_gen_batches`) is reached. If the cache still does not meet the target training batch size at that point, an error is raised. To resolve this, consider adjusting parameters such as `num_prompts_per_step` or `num_generations_per_prompt` to increase sample diversity, or revisit the complexity of your data.
+6. Samples are accumulated until the maximum number of allowed batches (`max_num_gen_batches`) is reached. If the cache still does not meet the target rollout batch size at that point, an error is raised. To resolve this, consider adjusting parameters such as `num_prompts_per_step` or `num_generations_per_prompt` to increase sample diversity, or revisit the complexity of your data.
 7. Perform training on the collected samples with non-zero standard deviation
 
 ## Reward Shaping
@@ -40,15 +40,7 @@ DAPO introduces an overlong reward shaping mechanism to reduce reward noise and 
 
 For a detailed explanation of the overlong reward shaping mechanism, please refer to Section 3.4 of the [DAPO paper](https://arxiv.org/pdf/2503.14476). For implementation details, see the [`apply_reward_shaping`](../../nemo_rl/algorithms/reward_functions.py) function.
 
-> [!NOTE]
-> **Clip-Higher** and **Token-Level Policy Gradient Loss** are already supported in NeMo RL and can be configured through the `loss_fn` section of your experiment config:
-> - Set `ratio_clip_max` to enable Clip-Higher (e.g., `ratio_clip_max: 0.28`)
-> - Set `token_level_loss: true` to enable Token-Level Policy Gradient Loss
-> 
-> See the [DAPO example config](../../examples/configs/recipes/llm/dapo-qwen2.5-7b.yaml) for reference.
-
-
-### Configuration
+## Configuration
 
 ```yaml
 grpo:
@@ -78,6 +70,13 @@ grpo:
 
 > [!NOTE]
 > When dynamic sampling is enabled, monitor the `filtered_reward` metric to track the average reward of the prompts with std > 0.
+
+> [!NOTE]
+> **Clip-Higher** and **Token-Level Policy Gradient Loss** are already supported in NeMo RL and can be configured through the `loss_fn` section of your experiment config:
+> - Set `ratio_clip_max` to enable Clip-Higher (e.g., `ratio_clip_max: 0.28`)
+> - Set `token_level_loss: true` to enable Token-Level Policy Gradient Loss
+> 
+> See the full [DAPO example config](../../examples/configs/recipes/llm/dapo-qwen2.5-7b.yaml) for reference.
 
 ## Example Training Results
 Using the [DAPO example config](../../examples/configs/recipes/llm/dapo-qwen2.5-7b.yaml), you can expect to see intermediate plots such as the training reward curve and validation accuracy on AIME24 for Qwen/Qwen2.5-Math-7B. These plots serve as reference outputs to help verify reproducibility. They are not intended to reflect the best accuracy that can be achieved using DAPO for this model.
