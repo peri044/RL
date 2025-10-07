@@ -16,6 +16,11 @@ import pytest
 import ray
 import torch
 
+from nemo_rl.algorithms.grpo import dynamic_sampling
+from nemo_rl.algorithms.reward_functions import (
+    RewardShapingConfig,
+    apply_reward_shaping,
+)
 from nemo_rl.data.interfaces import DatumSpec, LLMMessageLogType
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import (
@@ -23,6 +28,7 @@ from nemo_rl.environments.interfaces import (
     EnvironmentReturn,
 )
 from nemo_rl.experience.rollouts import calculate_rewards
+from nemo_rl.utils.timer import Timer
 
 
 @ray.remote(num_cpus=0)
@@ -55,6 +61,43 @@ class MockEnvironment(EnvironmentInterface):
         self, batch: BatchedDataDict
     ) -> tuple[BatchedDataDict, dict]:
         return batch, {}
+
+
+def create_mock_batch_with_responses(
+    num_samples: int,
+    response_lengths: list[int],
+    initial_rewards: list[float],
+    task_names: list[str] = None,
+) -> BatchedDataDict[DatumSpec]:
+    """Helper function to create a mock batch with specified response lengths and initial rewards."""
+    if task_names is None:
+        task_names = ["math"] * num_samples
+
+    message_logs = []
+    for i, length in enumerate(response_lengths):
+        # Create dummy token_ids for assistant response with specified length
+        assistant_tokens = torch.arange(length, dtype=torch.long)
+        user_tokens = torch.tensor([100, 101, 102], dtype=torch.long)
+
+        message_log = [
+            {"role": "user", "content": f"Question {i}", "token_ids": user_tokens},
+            {
+                "role": "assistant",
+                "content": f"Response {i}",
+                "token_ids": assistant_tokens,
+            },
+        ]
+        message_logs.append(message_log)
+
+    return BatchedDataDict[DatumSpec](
+        {
+            "task_name": task_names,
+            "message_log": message_logs,
+            "extra_env_info": [{} for _ in range(num_samples)],
+            "loss_multiplier": torch.ones(num_samples),
+            "total_reward": torch.tensor(initial_rewards),
+        }
+    )
 
 
 def create_mock_batch(
@@ -210,3 +253,346 @@ def test_calculate_rewards_missing_environment():
         ValueError, match="No environment found for task type: unknown_task"
     ):
         calculate_rewards(batch, task_to_env)
+
+
+def test_dapo_dynamic_sampling_filters_nonzero_std():
+    """Test that DAPO dynamic sampling only selects prompts with non-zero standard deviation."""
+    # Create mock batch data with 6 prompts (2 prompts * 3 generations each)
+    batch_size = 6
+    message_logs = [
+        [
+            {"role": "user", "content": f"prompt_{i // 3}"},
+            {"role": "assistant", "content": f"response_{i}"},
+        ]
+        for i in range(batch_size)
+    ]
+    task_names = ["math"] * batch_size
+
+    # Create batch with some prompts having zero std and others non-zero std
+    repeated_batch = create_mock_batch(batch_size, task_names, message_logs)
+    repeated_batch["total_reward"] = torch.tensor([1.0, 0.0, 1.0, 0.5, 0.5, 0.0])
+
+    # Mock prompts tensor (2 unique prompts, each repeated 3 times)
+    prompts = torch.tensor(
+        [
+            [1, 2, 3],  # prompt 0
+            [1, 2, 3],  # prompt 0
+            [1, 2, 3],  # prompt 0
+            [4, 5, 6],  # prompt 1
+            [4, 5, 6],  # prompt 1
+            [4, 5, 6],  # prompt 1
+        ]
+    )
+
+    # First prompt group has std=0.5 (rewards: 1.0, 0.0, 1.0 -> std ≠ 0)
+    # Second prompt group has std=0.25 (rewards: 0.5, 0.5, 0.0 -> std ≠ 0)
+    std = torch.tensor(
+        [0.5, 0.5, 0.5, 0.25, 0.25, 0.25]
+    )  # Both prompts have non-zero std
+    baseline = torch.tensor([0.67, 0.67, 0.67, 0.33, 0.33, 0.33])  # Mock baselines
+
+    # Configuration for dynamic sampling
+    master_config = {
+        "grpo": {
+            "use_dynamic_sampling": True,
+            "num_prompts_per_step": 2,  # Want 2 prompts
+            "num_generations_per_prompt": 3,  # Each with 3 generations
+            "max_num_gen_batches": 5,
+        }
+    }
+
+    timer = Timer()
+    num_gen_batches = 1
+
+    # Test dynamic sampling
+    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
+        repeated_batch, prompts, std, baseline, num_gen_batches, master_config, timer
+    )
+
+    # Since both prompts have non-zero std, all 6 samples should be selected
+    assert result_batch.size == 6
+    assert is_batch_complete == True
+    assert torch.allclose(result_batch["std"], std)
+    assert torch.allclose(result_batch["baseline"], baseline)
+
+
+def test_dapo_dynamic_sampling_filters_zero_std():
+    """Test that DAPO dynamic sampling filters out prompts with zero standard deviation."""
+    # Create mock batch data
+    batch_size = 6
+    message_logs = [
+        [
+            {"role": "user", "content": f"prompt_{i // 3}"},
+            {"role": "assistant", "content": f"response_{i}"},
+        ]
+        for i in range(batch_size)
+    ]
+    task_names = ["math"] * batch_size
+
+    repeated_batch = create_mock_batch(batch_size, task_names, message_logs)
+    repeated_batch["total_reward"] = torch.tensor(
+        [1.0, 1.0, 1.0, 0.5, 0.5, 0.0]
+    )  # First prompt has same rewards (std=0)
+
+    # Mock prompts tensor
+    prompts = torch.tensor(
+        [
+            [1, 2, 3],  # prompt 0
+            [1, 2, 3],  # prompt 0
+            [1, 2, 3],  # prompt 0
+            [4, 5, 6],  # prompt 1
+            [4, 5, 6],  # prompt 1
+            [4, 5, 6],  # prompt 1
+        ]
+    )
+
+    # First prompt has zero std (all rewards are 1.0)
+    # Second prompt has non-zero std (rewards: 0.5, 0.5, 0.0)
+    std = torch.tensor(
+        [0.0, 0.0, 0.0, 0.25, 0.25, 0.25]
+    )  # First prompt has zero std, second has non-zero
+    baseline = torch.tensor([1.0, 1.0, 1.0, 0.33, 0.33, 0.33])
+
+    master_config = {
+        "grpo": {
+            "use_dynamic_sampling": True,
+            "num_prompts_per_step": 1,  # Want 1 prompt only
+            "num_generations_per_prompt": 3,
+        }
+    }
+
+    timer = Timer()
+    num_gen_batches = 1
+
+    # Test dynamic sampling
+    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
+        repeated_batch, prompts, std, baseline, num_gen_batches, master_config, timer
+    )
+
+    # Only the second prompt (indices 3,4,5) should be selected since first has zero std
+    assert result_batch.size == 3  # Only 3 samples from the second prompt
+    assert is_batch_complete == True
+    assert torch.allclose(
+        result_batch["std"], torch.tensor([0.25, 0.25, 0.25])
+    )  # Only non-zero std
+    assert torch.allclose(result_batch["baseline"], torch.tensor([0.33, 0.33, 0.33]))
+
+    ## verify that only prompt_1 is selected
+    prompts = [
+        result_batch["message_log"][i][0]["content"] for i in range(result_batch.size)
+    ]
+    assert prompts == ["prompt_1", "prompt_1", "prompt_1"]
+
+    # Verify that filtered rewards are correct
+    expected_filtered_rewards = torch.tensor(
+        [
+            0.5,
+            0.5,
+            0.0,
+        ]
+    )
+    assert torch.allclose(result_batch["filtered_reward"], expected_filtered_rewards)
+
+
+def test_dapo_dynamic_sampling_batch_caching():
+    """Test that DAPO dynamic sampling uses batch caching when insufficient non-zero std prompts are found."""
+    # Create mock batch with only 1 prompt having non-zero std, but we need 2
+    batch_size = 3
+    message_logs = [
+        [
+            {"role": "user", "content": "prompt_0"},
+            {"role": "assistant", "content": f"response_{i}"},
+        ]
+        for i in range(batch_size)
+    ]
+    task_names = ["math"] * batch_size
+
+    repeated_batch = create_mock_batch(batch_size, task_names, message_logs)
+    repeated_batch["total_reward"] = torch.tensor([1.0, 0.0, 0.5])  # Non-zero std
+
+    prompts = torch.tensor(
+        [
+            [1, 2, 3],  # prompt 0
+            [1, 2, 3],  # prompt 0
+            [1, 2, 3],  # prompt 0
+        ]
+    )
+
+    std = torch.tensor([0.4, 0.4, 0.4])  # Only one prompt with non-zero std
+    baseline = torch.tensor([0.5, 0.5, 0.5])
+
+    master_config = {
+        "grpo": {
+            "use_dynamic_sampling": True,
+            "num_prompts_per_step": 2,  # Need 2 prompts but only have 1
+            "num_generations_per_prompt": 3,
+            "max_num_gen_batches": 5,
+        }
+    }
+
+    timer = Timer()
+    num_gen_batches = 1
+
+    # Test dynamic sampling - should indicate batch is not complete
+    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
+        repeated_batch, prompts, std, baseline, num_gen_batches, master_config, timer
+    )
+
+    # Should have cached the batch but marked as incomplete
+    assert (
+        result_batch.size == 3
+    )  # All samples from the single prompt with non-zero std
+    assert is_batch_complete == False  # Not enough prompts, need to continue sampling
+    assert batch_cache is not None
+    assert batch_cache == result_batch
+
+    # Run dynamic sampling again with the cached batch
+    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
+        repeated_batch,
+        prompts,
+        std,
+        baseline,
+        num_gen_batches,
+        master_config,
+        timer,
+        batch_cache,
+    )
+
+    # After running dynamic sampling again, the batch should be complete
+    assert (
+        result_batch.size == 6
+    )  # All samples from the single prompt with non-zero std
+    assert is_batch_complete == True
+    assert batch_cache is not None
+
+
+def test_dapo_dynamic_sampling_disabled():
+    """Test that when dynamic sampling is disabled, all prompts are kept regardless of std."""
+    batch_size = 6
+    message_logs = [
+        [
+            {"role": "user", "content": f"prompt_{i // 3}"},
+            {"role": "assistant", "content": f"response_{i}"},
+        ]
+        for i in range(batch_size)
+    ]
+    task_names = ["math"] * batch_size
+
+    repeated_batch = create_mock_batch(batch_size, task_names, message_logs)
+    repeated_batch["total_reward"] = torch.tensor([1.0, 1.0, 1.0, 0.5, 0.5, 0.0])
+
+    prompts = torch.tensor(
+        [
+            [1, 2, 3],
+            [1, 2, 3],
+            [1, 2, 3],
+            [4, 5, 6],
+            [4, 5, 6],
+            [4, 5, 6],
+        ]
+    )
+
+    # Mix of zero and non-zero std
+    std = torch.tensor([0.0, 0.0, 0.0, 0.25, 0.25, 0.25])
+    baseline = torch.tensor([1.0, 1.0, 1.0, 0.33, 0.33, 0.33])
+
+    # Disable dynamic sampling
+    master_config = {
+        "grpo": {
+            "use_dynamic_sampling": False,
+            "num_prompts_per_step": 2,
+            "num_generations_per_prompt": 3,
+        }
+    }
+
+    timer = Timer()
+    num_gen_batches = 1
+
+    # Test that dynamic sampling is bypassed
+    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
+        repeated_batch, prompts, std, baseline, num_gen_batches, master_config, timer
+    )
+
+    # All samples should be kept when dynamic sampling is disabled
+    assert result_batch.size == 6
+    assert is_batch_complete == True
+    assert batch_cache is None  # No caching when disabled
+
+
+def test_reward_shaping_integration():
+    """Test reward shaping integration with GRPO data structures."""
+    # Create batch with responses of different lengths
+    batch = create_mock_batch_with_responses(
+        num_samples=3,
+        response_lengths=[15, 25, 35],  # Short, medium, long responses
+        initial_rewards=[1.0, 0.8, 0.6],
+        task_names=["math", "math", "math"],
+    )
+
+    # Test reward shaping with DAPO penalties
+    # expected_response_length = 30 - 10 = 20
+    config = RewardShapingConfig(
+        enabled=True,
+        overlong_buffer_length=10,
+        overlong_buffer_penalty=0.5,
+        max_response_length=30,
+    )
+
+    # Apply reward shaping
+    result_batch = apply_reward_shaping(batch, config)
+
+    # Calculate expected rewards:
+    # Response 0: length=15, exceed_length=15-20=-5 (no penalty), reward=1.0
+    # Response 1: length=25, exceed_length=25-20=5, penalty=min(-5/10*0.5, 0)=-0.25, reward=0.8-0.25=0.55
+    # Response 2: length=35, exceed_length=35-20=15, penalty=min(-15/10*0.5, 0)=-0.75, reward=0.6-0.75=-0.15
+    expected_rewards = torch.tensor([1.0, 0.55, -0.15])
+
+    assert torch.allclose(result_batch["total_reward"], expected_rewards, atol=1e-6)
+
+    # Verify that other batch fields remain unchanged
+    assert result_batch["task_name"] == ["math", "math", "math"]
+    assert len(result_batch["message_log"]) == 3
+    assert torch.allclose(result_batch["loss_multiplier"], torch.ones(3))
+
+
+def test_reward_shaping_with_dynamic_sampling():
+    """Test that reward shaping works correctly before dynamic sampling is applied."""
+    # Create batch where reward shaping will affect which prompts have non-zero std
+    # Two prompts, each with 2 generations
+    batch = create_mock_batch_with_responses(
+        num_samples=4,
+        response_lengths=[10, 30, 15, 35],  # Two prompts: [10,30] and [15,35]
+        initial_rewards=[
+            1.0,
+            1.0,
+            0.8,
+            0.8,
+        ],  # Initially same rewards per prompt (std=0)
+        task_names=["math"] * 4,
+    )
+
+    # Apply reward shaping first (as done in GRPO)
+    # expected_response_length = 25 - 5 = 20
+    reward_config = RewardShapingConfig(
+        enabled=True,
+        overlong_buffer_length=5,
+        overlong_buffer_penalty=0.4,
+        max_response_length=25,
+    )
+
+    shaped_batch = apply_reward_shaping(batch, reward_config)
+
+    # After reward shaping:
+    # Response 0: length=10, no penalty, reward=1.0
+    # Response 1: length=30, exceed_length=10, penalty=-10/5*0.4=-0.8, reward=1.0-0.8=0.2
+    # Response 2: length=15, no penalty, reward=0.8
+    # Response 3: length=35, exceed_length=15, penalty=-15/5*0.4=-1.2, reward=0.8-1.2=-0.4
+
+    expected_shaped_rewards = torch.tensor([1.0, 0.2, 0.8, -0.4])
+    assert torch.allclose(
+        shaped_batch["total_reward"], expected_shaped_rewards, atol=1e-6
+    )
+
+    # Now both prompts should have non-zero std due to reward shaping
+    # Prompt 0: rewards [1.0, 0.2] -> std != 0
+    # Prompt 1: rewards [0.8, -0.4] -> std != 0
