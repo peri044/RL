@@ -190,6 +190,9 @@ def main() -> None:
 
     # Check if async mode is enabled
     if "async_grpo" in config["grpo"] and config["grpo"]["async_grpo"]["enabled"]:
+        if config["grpo"]["use_dynamic_sampling"]:
+            raise ValueError("Dynamic sampling is not supported with async GRPO")
+
         from nemo_rl.algorithms.grpo import async_grpo_train
 
         print("🚀 Running async GRPO training")
