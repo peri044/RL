@@ -21,47 +21,7 @@ from nemo_rl.algorithms.reward_functions import (
 )
 from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
-
-
-def create_mock_batch_with_responses(
-    num_samples: int,
-    response_lengths: list[int],
-    initial_rewards: list[float],
-    task_names: list[str] = None,
-) -> BatchedDataDict[DatumSpec]:
-    """Helper function to create a mock batch with specified response lengths and initial rewards."""
-    if task_names is None:
-        task_names = ["math"] * num_samples
-
-    message_logs = []
-    for i, length in enumerate(response_lengths):
-        # Create dummy token_ids for assistant response with specified length
-        assistant_tokens = torch.arange(
-            length, dtype=torch.long
-        )  # [0, 1, 2, ..., length-1]
-        user_tokens = torch.tensor(
-            [100, 101, 102], dtype=torch.long
-        )  # dummy user tokens
-
-        message_log = [
-            {"role": "user", "content": f"Question {i}", "token_ids": user_tokens},
-            {
-                "role": "assistant",
-                "content": f"Response {i}",
-                "token_ids": assistant_tokens,
-            },
-        ]
-        message_logs.append(message_log)
-
-    return BatchedDataDict[DatumSpec](
-        {
-            "task_name": task_names,
-            "message_log": message_logs,
-            "extra_env_info": [{} for _ in range(num_samples)],
-            "loss_multiplier": torch.ones(num_samples),
-            "total_reward": torch.tensor(initial_rewards),
-        }
-    )
+from tests.unit.algorithms.utils import create_mock_batch_with_responses
 
 
 def test_reward_shaping_disabled():

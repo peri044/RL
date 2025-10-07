@@ -17,11 +17,7 @@ import ray
 import torch
 
 from nemo_rl.algorithms.grpo import dynamic_sampling
-from nemo_rl.algorithms.reward_functions import (
-    RewardShapingConfig,
-    apply_reward_shaping,
-)
-from nemo_rl.data.interfaces import DatumSpec, LLMMessageLogType
+from nemo_rl.data.interfaces import LLMMessageLogType
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import (
     EnvironmentInterface,
@@ -29,6 +25,9 @@ from nemo_rl.environments.interfaces import (
 )
 from nemo_rl.experience.rollouts import calculate_rewards
 from nemo_rl.utils.timer import Timer
+from tests.unit.algorithms.utils import (
+    create_mock_batch,
+)
 
 
 @ray.remote(num_cpus=0)
@@ -61,63 +60,6 @@ class MockEnvironment(EnvironmentInterface):
         self, batch: BatchedDataDict
     ) -> tuple[BatchedDataDict, dict]:
         return batch, {}
-
-
-def create_mock_batch_with_responses(
-    num_samples: int,
-    response_lengths: list[int],
-    initial_rewards: list[float],
-    task_names: list[str] = None,
-) -> BatchedDataDict[DatumSpec]:
-    """Helper function to create a mock batch with specified response lengths and initial rewards."""
-    if task_names is None:
-        task_names = ["math"] * num_samples
-
-    message_logs = []
-    for i, length in enumerate(response_lengths):
-        # Create dummy token_ids for assistant response with specified length
-        assistant_tokens = torch.arange(length, dtype=torch.long)
-        user_tokens = torch.tensor([100, 101, 102], dtype=torch.long)
-
-        message_log = [
-            {"role": "user", "content": f"Question {i}", "token_ids": user_tokens},
-            {
-                "role": "assistant",
-                "content": f"Response {i}",
-                "token_ids": assistant_tokens,
-            },
-        ]
-        message_logs.append(message_log)
-
-    return BatchedDataDict[DatumSpec](
-        {
-            "task_name": task_names,
-            "message_log": message_logs,
-            "extra_env_info": [{} for _ in range(num_samples)],
-            "loss_multiplier": torch.ones(num_samples),
-            "total_reward": torch.tensor(initial_rewards),
-        }
-    )
-
-
-def create_mock_batch(
-    num_samples: int,
-    task_names: list[str],
-    message_logs: list[LLMMessageLogType],
-    extra_env_info: list[dict] = None,
-) -> BatchedDataDict[DatumSpec]:
-    """Helper function to create a mock batch for testing."""
-    if extra_env_info is None:
-        extra_env_info = [{} for _ in range(num_samples)]
-
-    return BatchedDataDict[DatumSpec](
-        {
-            "task_name": task_names,
-            "message_log": message_logs,
-            "extra_env_info": extra_env_info,
-            "loss_multiplier": torch.ones(num_samples),
-        }
-    )
 
 
 @pytest.fixture(scope="module")
@@ -519,85 +461,6 @@ def test_dapo_dynamic_sampling_disabled():
     assert batch_cache is None  # No caching when disabled
 
 
-def test_reward_shaping_integration():
-    """Test reward shaping integration with GRPO data structures."""
-    # Create batch with responses of different lengths
-    batch = create_mock_batch_with_responses(
-        num_samples=3,
-        response_lengths=[15, 25, 35],  # Short, medium, long responses
-        initial_rewards=[1.0, 0.8, 0.6],
-        task_names=["math", "math", "math"],
-    )
-
-    # Test reward shaping with DAPO penalties
-    # expected_response_length = 30 - 10 = 20
-    config = RewardShapingConfig(
-        enabled=True,
-        overlong_buffer_length=10,
-        overlong_buffer_penalty=0.5,
-        max_response_length=30,
-    )
-
-    # Apply reward shaping
-    result_batch = apply_reward_shaping(batch, config)
-
-    # Calculate expected rewards:
-    # Response 0: length=15, exceed_length=15-20=-5 (no penalty), reward=1.0
-    # Response 1: length=25, exceed_length=25-20=5, penalty=min(-5/10*0.5, 0)=-0.25, reward=0.8-0.25=0.55
-    # Response 2: length=35, exceed_length=35-20=15, penalty=min(-15/10*0.5, 0)=-0.75, reward=0.6-0.75=-0.15
-    expected_rewards = torch.tensor([1.0, 0.55, -0.15])
-
-    assert torch.allclose(result_batch["total_reward"], expected_rewards, atol=1e-6)
-
-    # Verify that other batch fields remain unchanged
-    assert result_batch["task_name"] == ["math", "math", "math"]
-    assert len(result_batch["message_log"]) == 3
-    assert torch.allclose(result_batch["loss_multiplier"], torch.ones(3))
-
-
-def test_reward_shaping_with_dynamic_sampling():
-    """Test that reward shaping works correctly before dynamic sampling is applied."""
-    # Create batch where reward shaping will affect which prompts have non-zero std
-    # Two prompts, each with 2 generations
-    batch = create_mock_batch_with_responses(
-        num_samples=4,
-        response_lengths=[10, 30, 15, 35],  # Two prompts: [10,30] and [15,35]
-        initial_rewards=[
-            1.0,
-            1.0,
-            0.8,
-            0.8,
-        ],  # Initially same rewards per prompt (std=0)
-        task_names=["math"] * 4,
-    )
-
-    # Apply reward shaping first (as done in GRPO)
-    # expected_response_length = 25 - 5 = 20
-    reward_config = RewardShapingConfig(
-        enabled=True,
-        overlong_buffer_length=5,
-        overlong_buffer_penalty=0.4,
-        max_response_length=25,
-    )
-
-    shaped_batch = apply_reward_shaping(batch, reward_config)
-
-    # After reward shaping:
-    # Response 0: length=10, no penalty, reward=1.0
-    # Response 1: length=30, exceed_length=10, penalty=-10/5*0.4=-0.8, reward=1.0-0.8=0.2
-    # Response 2: length=15, no penalty, reward=0.8
-    # Response 3: length=35, exceed_length=15, penalty=-15/5*0.4=-1.2, reward=0.8-1.2=-0.4
-
-    expected_shaped_rewards = torch.tensor([1.0, 0.2, 0.8, -0.4])
-    assert torch.allclose(
-        shaped_batch["total_reward"], expected_shaped_rewards, atol=1e-6
-    )
-
-    # Now both prompts should have non-zero std due to reward shaping
-    # Prompt 0: rewards [1.0, 0.2] -> std != 0
-    # Prompt 1: rewards [0.8, -0.4] -> std != 0
-
-
 def test_noncolocated_inference_requires_explicit_gpus_per_node_single_node():
     """Test that non-colocated inference requires explicit gpus_per_node when policy_nodes=1."""
     from unittest.mock import MagicMock, patch
@@ -625,6 +488,7 @@ def test_noncolocated_inference_requires_explicit_gpus_per_node_single_node():
             "num_prompts_per_step": 1,
             "val_period": 0,
             "val_at_start": False,
+            "use_dynamic_sampling": False,
         },
         "data": {"shuffle": False},
         "logger": {},  # Config extraction requires this key
@@ -681,6 +545,7 @@ def test_noncolocated_inference_requires_explicit_gpus_per_node_multi_node():
             "num_prompts_per_step": 1,
             "val_period": 0,
             "val_at_start": False,
+            "use_dynamic_sampling": False,
         },
         "data": {"shuffle": False},
         "logger": {},  # Config extraction requires this key
