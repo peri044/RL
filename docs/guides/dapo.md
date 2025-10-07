@@ -79,6 +79,12 @@ grpo:
 > [!NOTE]
 > When dynamic sampling is enabled, monitor the `filtered_reward` metric to track the average reward of the prompts with std > 0.
 
+## Example Training Results
+Using the [DAPO example config](../../examples/configs/recipes/llm/dapo-qwen2.5-7b.yaml), you can expect to see intermediate plots such as the training reward curve and validation accuracy on AIME24 for Qwen/Qwen2.5-Math-7B. These plots serve as reference outputs to help verify reproducibility. They are not intended to reflect the best accuracy that can be achieved using DAPO for this model.
+
+![DAPO Qwen2.5-7B Training Reward](../assets/dapo_train_reward.png)
+![DAPO Qwen2.5-7B Validation Accuracy](../assets/dapo_val_acc.png)
+
 ## References
 
 - **DAPO Paper**: [Decoupled Clip and Dynamic Sampling for Adaptive Policy Optimization](https://arxiv.org/pdf/2503.14476)
