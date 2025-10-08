@@ -11,7 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import TypedDict, TypeVar
+from typing import (
+    NotRequired,
+    TypedDict,
+    TypeVar,
+)
 
 import torch
 
@@ -28,9 +32,9 @@ class RewardShapingConfig(TypedDict):
     """
 
     enabled: bool
-    overlong_buffer_length: int
-    overlong_buffer_penalty: float
-    max_response_length: int
+    overlong_buffer_length: NotRequired[int]
+    overlong_buffer_penalty: NotRequired[float]
+    max_response_length: NotRequired[int]
 
 
 def apply_reward_shaping(

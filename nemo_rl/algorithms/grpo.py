@@ -77,6 +77,11 @@ from nemo_rl.utils.venvs import create_local_venv_on_each_node
 # ===============================================================================
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
+class  RewardScalingConfig(TypedDict):
+    enabled: bool
+    correct: NotRequired[float]
+    incorrect: NotRequired[float]
+
 
 class AsyncGRPOConfig(TypedDict):
     enabled: bool
@@ -101,8 +106,10 @@ class GRPOConfig(TypedDict):
     seed: int
     async_grpo: NotRequired[AsyncGRPOConfig]
     overlong_filtering: NotRequired[bool]
+    use_dynamic_sampling: bool
+    max_num_gen_batches: NotRequired[int]
     reward_shaping: RewardShapingConfig
-    reward_scaling: NotRequired[dict[str, float]]
+    reward_scaling: RewardScalingConfig
     dapo_batch_multiplier: NotRequired[int]
 
 
