@@ -75,7 +75,7 @@ class HFVerifyWorker:
         pred_responses: list[str],
         ground_truths: list[str],
         return_extracted_answer: bool = False,
-        use_dapo_math_verifier: bool = False,
+        **kwargs,
     ) -> Union[list[float], tuple[list[float], list[str | None]]]:
         """Verify the correctness of the predicted responses against the ground truth.
 
@@ -94,7 +94,7 @@ class HFVerifyWorker:
         for response, ground_truth in zip(pred_responses, ground_truths):
             try:
                 with _mute_output():
-                    if use_dapo_math_verifier:
+                    if kwargs.get("use_dapo_math_verifier", False):
                         # This compute_score is from the DAPO Math Verifier from Verl
                         reward_dict = dapo_math_verify(response, ground_truth)
                         ret_score = reward_dict["score"]
