@@ -1,3 +1,4 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
 # Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# Adapted from https://github.com/EleutherAI/lm-evaluation-harness/blob/main/lm_eval/tasks/hendrycks_math/utils.py
+# Adapted from https://github.com/volcengine/verl/blob/main/verl/utils/reward_score/math_dapo.py
 
 import re
 from typing import Optional
