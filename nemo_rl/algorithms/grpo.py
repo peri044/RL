@@ -77,6 +77,11 @@ from nemo_rl.utils.venvs import create_local_venv_on_each_node
 # ===============================================================================
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
+class  RewardScalingConfig(TypedDict):
+    enabled: bool
+    correct: NotRequired[float]
+    incorrect: NotRequired[float]
+
 
 class AsyncGRPOConfig(TypedDict):
     enabled: bool
@@ -101,8 +106,10 @@ class GRPOConfig(TypedDict):
     seed: int
     async_grpo: NotRequired[AsyncGRPOConfig]
     overlong_filtering: NotRequired[bool]
+    use_dynamic_sampling: bool
+    max_num_gen_batches: NotRequired[int]
     reward_shaping: RewardShapingConfig
-    reward_scaling: NotRequired[dict[str, float]]
+    reward_scaling: RewardScalingConfig
     dapo_batch_multiplier: NotRequired[int]
 
 
@@ -448,11 +455,17 @@ def setup(
     if not colocated_inference:
         ip, port = train_cluster.get_master_address_and_port()
         print(f"Using ip: {ip}, port: {port} for collective communication", flush=True)
-        # inference cluster + head node of the train cluster
-        world_size = inference_nodes * inference_gpus_per_node + 1
+        # world includes all training workers and all inference workers
+        train_world_size = train_cluster.world_size()
+        inference_world_size = inference_nodes * inference_gpus_per_node
+        world_size = train_world_size + inference_world_size
         # init collective
-        futures_train = policy.init_collective(ip, port, world_size)
-        futures_inference = policy_generation.init_collective(ip, port, world_size)  # type: ignore
+        futures_train = policy.init_collective(
+            ip, port, world_size, train_world_size=train_world_size
+        )
+        futures_inference = policy_generation.init_collective(
+            ip, port, world_size, train_world_size=train_world_size
+        )  # type: ignore
         # wait for all futures to complete
         ray.get(futures_train + futures_inference)
 
