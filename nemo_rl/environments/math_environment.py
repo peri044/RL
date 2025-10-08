@@ -141,6 +141,7 @@ class MultilingualMultichoiceVerifyWorker:
         pred_responses: list[str],
         ground_truths: list[str],
         return_extracted_answer: bool = False,
+        **kwargs,
     ) -> Union[list[float], tuple[list[float], list[str | None]]]:
         """Verify the correctness of the predicted responses against the ground truth.
 
@@ -186,6 +187,7 @@ class EnglishMultichoiceVerifyWorker:
         pred_responses: list[str],
         ground_truths: list[str],
         return_extracted_answer: bool = False,
+        **kwargs,
     ) -> Union[list[float], tuple[list[float], list[str | None]]]:
         """Verify the correctness of the predicted responses against the ground truth.
 
@@ -236,6 +238,7 @@ class MathEnvironment(EnvironmentInterface[MathEnvironmentMetadata]):
         assert isinstance(verifier_type, str), (
             f"{verifier_type=} must be a string but was {type(verifier_type)}"
         )
+
         worker_cls = {
             "math": HFVerifyWorker,
             "english_multichoice": EnglishMultichoiceVerifyWorker,
@@ -297,7 +300,7 @@ class MathEnvironment(EnvironmentInterface[MathEnvironmentMetadata]):
                 chunk,
                 ground_truth_chunk,
                 return_extracted_answer,
-                self.cfg.get("use_dapo_math_verifier", False),
+                use_dapo_math_verifier=self.cfg.get("use_dapo_math_verifier", False),
             )
             for i, (chunk, ground_truth_chunk) in enumerate(
                 zip(chunked_assistant_response_batch, chunked_ground_truths)
