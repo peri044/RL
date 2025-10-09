@@ -450,6 +450,7 @@ class MegatronPolicyWorker:
         *,
         worker_sharding_annotations: NamedSharding,
         pre_init_communication_queue: Queue,
+        hf_config_overrides: dict[str, Any] = {},
         **kwargs: Any,
     ):
         self.is_generation_colocated = None
@@ -504,7 +505,7 @@ class MegatronPolicyWorker:
             print(f"Checkpoint already exists at {pretrained_path}. Skipping import.")
         else:
             import_model_from_hf_name(
-                hf_model_name, pretrained_path, self.cfg["megatron_cfg"]
+                hf_model_name, pretrained_path, self.cfg["megatron_cfg"], **hf_config_overrides
             )
 
         pretrained_run_config = os.path.join(

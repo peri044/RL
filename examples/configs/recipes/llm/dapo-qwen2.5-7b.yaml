@@ -47,6 +47,8 @@ checkpointing:
 
 policy:
   model_name: "Qwen/Qwen2.5-Math-7B"
+  hf_config_overrides:
+    max_position_embeddings: 16384
   tokenizer:
     name: ${policy.model_name} ## specify if you'd like to use a tokenizer different from the model's default
   train_global_batch_size: 512

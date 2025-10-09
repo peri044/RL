@@ -366,6 +366,8 @@ def setup(
         weights_path = None
         optimizer_path = None
 
+    hf_config_overrides = policy_config.get("hf_config_overrides", {})
+
     student_policy = Policy(
         name_prefix="student",
         cluster=train_cluster,
@@ -375,6 +377,7 @@ def setup(
         optimizer_path=optimizer_path,
         init_optimizer=True,
         init_reference_model=False,
+        hf_config_overrides=hf_config_overrides,
     )
 
     # ==========================

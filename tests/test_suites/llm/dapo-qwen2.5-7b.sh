@@ -14,7 +14,7 @@ exit_if_max_steps_reached
 
 # Run the experiment
 cd $PROJECT_ROOT
-VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 uv run examples/run_grpo_math.py \
+uv run examples/run_grpo_math.py \
     --config $CONFIG_PATH \
     grpo.max_num_steps=$MAX_STEPS \
     logger.log_dir=$LOG_DIR \

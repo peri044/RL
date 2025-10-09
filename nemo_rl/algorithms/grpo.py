@@ -441,6 +441,8 @@ def setup(
         total_train_iters = min(grpo_config["max_num_steps"], len(dataloader))
         policy_config["megatron_cfg"]["train_iters"] = total_train_iters
 
+    hf_config_overrides = policy_config.get("hf_config_overrides", {})
+
     policy = Policy(
         cluster=train_cluster,
         config=policy_config,
@@ -449,6 +451,7 @@ def setup(
         weights_path=weights_path,
         optimizer_path=optimizer_path,
         init_optimizer=True,
+        hf_config_overrides=hf_config_overrides,
     )
 
     # if it is not colocated inference, initialize collective communication for update weights

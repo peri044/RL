@@ -156,6 +156,7 @@ class DTensorPolicyWorker:
         optimizer_path: Optional[str] = None,
         init_optimizer: bool = True,
         init_reference_model: bool = True,
+        hf_config_overrides: dict[str, Any] = {},
         **kwargs: Any,
     ):
         self.tokenizer = tokenizer
@@ -228,6 +229,7 @@ class DTensorPolicyWorker:
             attn_implementation="flash_attention_2"
             if self.enable_seq_packing
             else None,
+            **hf_config_overrides,
         )
 
         # reward model
