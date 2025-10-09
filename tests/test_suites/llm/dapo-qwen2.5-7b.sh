@@ -14,7 +14,7 @@ exit_if_max_steps_reached
 
 # Run the experiment
 cd $PROJECT_ROOT
-uv run examples/run_grpo_math.py \
+VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 uv run examples/run_grpo_math.py \
     --config $CONFIG_PATH \
     grpo.max_num_steps=$MAX_STEPS \
     logger.log_dir=$LOG_DIR \
@@ -36,6 +36,6 @@ if [[ $(jq 'to_entries | .[] | select(.key == "train/loss") | .value | keys | ma
     uv run tests/check_metrics.py $JSON_METRICS \
         'mean(data["train/token_mult_prob_error"]) < 1.1' \
         'data["train/token_mult_prob_error"]["20"] < 1.1' \
-        'data["train/reward"]["20"] > -0.5" \
+        'data["train/reward"]["20"] > -0.5' \
         'data["train/filtered_reward"]["20"] > -0.3' \
 fi
