@@ -66,6 +66,8 @@ def apply_reward_shaping(
             "Reward function is enabled but only DAPO reward shaping is currently supported. Please ensure overlong_buffer_length, overlong_buffer_penalty, and max_response_length are properly configured."
         )
 
+    assert overlong_buffer_penalty >= 0, f"{overlong_buffer_penalty=} must be >=0"
+
     # Get the overlong_buffer_length, overlong_buffer_penalty and max_response_length
     overlong_buffer_length = cfg["overlong_buffer_length"]
     overlong_buffer_penalty = cfg["overlong_buffer_penalty"]

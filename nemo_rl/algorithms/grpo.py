@@ -115,7 +115,7 @@ class GRPOConfig(TypedDict):
     max_num_gen_batches: NotRequired[int]
     # When using dynamic sampling, generation prompt batch size will equal 
     # num_prompts_per_step * dapo_batch_multiplier
-    dapo_batch_multiplier: NotRequired[int]
+    dapo_batch_multiplier: NotRequired[float]
     reward_shaping: RewardShapingConfig
     reward_scaling: RewardScalingConfig
 
@@ -222,12 +222,9 @@ def setup(
     # ==========================
     #           Data
     # ==========================
-    train_batch_size = (
-        grpo_config["num_prompts_per_step"]
-        * grpo_config.get("dapo_batch_multiplier", 1)
-        if grpo_config["use_dynamic_sampling"]
-        else grpo_config["num_prompts_per_step"]
-    )
+    train_batch_size = grpo_config["num_prompts_per_step"]
+    if grpo_config["use_dynamic_sampling"]:
+        dataloader_batch_size = int(train_batch_size * grpo_config["dapo_batch_multiplier"])
     dataloader = StatefulDataLoader(
         dataset,
         batch_size=train_batch_size,
@@ -565,29 +562,29 @@ def dynamic_sampling(
 
             # Only select the inputs that have non-zero std
             # total_reward is already a part of repeated_batch so we don't need to add it again
-            repeated_batch = repeated_batch.select_indices(keep_prompt_indices)
-            repeated_batch["std"] = std[keep_prompt_indices]
-            repeated_batch["baseline"] = baseline[keep_prompt_indices]
+            filtered_repeated_batch = repeated_batch.select_indices(keep_prompt_indices)
+            filtered_repeated_batch["std"] = std[keep_prompt_indices]
+            filtered_repeated_batch["baseline"] = baseline[keep_prompt_indices]
 
             # Store filtered and total rewards to track them separately
-            filtered_rewards = repeated_batch["total_reward"]
-            repeated_batch["total_reward"] = total_rewards
-            repeated_batch["filtered_reward"] = filtered_rewards
+            filtered_rewards = filtered_repeated_batch["total_reward"]
+            filtered_repeated_batch["total_reward"] = total_rewards
+            filtered_repeated_batch["filtered_reward"] = filtered_rewards
 
             # Store the total_reward for the current filtered batch.
-            # If none of the prompts in current batch have non-zero std, repeated_batch.size will be 0.
+            # If none of the prompts in current batch have non-zero std, filtered_repeated_batch.size will be 0.
             # In this case, the current batch will be ignored and the next batch will be processed and we generate responses for it.
-            if repeated_batch.size > 0:
+            if filtered_repeated_batch.size > 0:
                 # Concatenate the previous partially filled batch with the current batch. This serves as a cache to store and collect the prompts with non-zero std.
                 # This is used in the next iteration when the current batch is not enough to fill the buffer.
                 batch_cache = (
-                    repeated_batch
+                    filtered_repeated_batch
                     if batch_cache is None
-                    else BatchedDataDict.from_batches([batch_cache, repeated_batch])
+                    else BatchedDataDict.from_batches([batch_cache, filtered_repeated_batch])
                 )
-                repeated_batch = batch_cache
+                filtered_repeated_batch = batch_cache
 
-            generation_sample_buffer_size = repeated_batch.size
+            generation_sample_buffer_size = filtered_repeated_batch.size
             train_prompts_size = (
                 master_config["grpo"]["num_prompts_per_step"]
                 * master_config["grpo"]["num_generations_per_prompt"]
@@ -595,10 +592,9 @@ def dynamic_sampling(
 
             # If the generation samples size is smaller than a fixed threshold (train_prompts_size), keep generating by processing the next batch
             if generation_sample_buffer_size < train_prompts_size:
-                max_num_gen_batches = master_config["grpo"].get(
-                    "max_num_gen_batches", 0
-                )
-                if max_num_gen_batches <= 0 or num_gen_batches <= max_num_gen_batches:
+                max_num_gen_batches = master_config["grpo"]["max_num_gen_batches"]
+                assert max_num_gen_batches > 0, "When using grpo.use_dynamic_sampling, grpo.max_num_gen_batches must be > 0"
+                if num_gen_batches <= max_num_gen_batches:
                     print(
                         f"Generation sample buffer size: {generation_sample_buffer_size} is smaller than train_prompts_size: {train_prompts_size}. Processed {num_gen_batches} batches so far out of {max_num_gen_batches}."
                     )
@@ -609,9 +605,10 @@ def dynamic_sampling(
                     )
             else:
                 #  Slice the batch, rewards, baselines and std to ensure batch size is train_prompts_size
-                repeated_batch = repeated_batch.slice(0, train_prompts_size)
-
-    return repeated_batch, is_batch_complete, batch_cache
+                filtered_repeated_batch = filtered_repeated_batch.slice(0, train_prompts_size)
+    
+    batch_to_return = filtered_repeated_batch if master_config["grpo"]["use_dynamic_sampling"] else repeated_batch
+    return batch_to_return, is_batch_complete, batch_cache
 
 
 def scale_rewards(
