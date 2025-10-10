@@ -77,7 +77,8 @@ from nemo_rl.utils.venvs import create_local_venv_on_each_node
 # ===============================================================================
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
-class  RewardScalingConfig(TypedDict):
+
+class RewardScalingConfig(TypedDict):
     enabled: bool
     correct: NotRequired[float]
     incorrect: NotRequired[float]
@@ -417,6 +418,10 @@ def setup(
             assert loss_config["use_importance_sampling_correction"] is True, (
                 "Importance sampling must be enabled for vLLM FP8 generation for good convergence!"
             )
+        ## make vllm hf overrides match the training policy
+        generation_config["vllm_cfg"]["hf_overrides"] = policy_config.get(
+            "hf_config_overrides"
+        )
 
         policy_generation = VllmGeneration(
             cluster=inference_cluster, config=generation_config
@@ -1988,6 +1993,12 @@ def async_grpo_train(
 
             timer.reset()
             step += 1
+
+    except Exception as e:
+        print(f"❌ Error in async loop: {e}")
+        import traceback
+
+        traceback.print_exc()
 
     finally:
         # Clean up
