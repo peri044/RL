@@ -77,7 +77,8 @@ from nemo_rl.utils.venvs import create_local_venv_on_each_node
 # ===============================================================================
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
-class  RewardScalingConfig(TypedDict):
+
+class RewardScalingConfig(TypedDict):
     enabled: bool
     correct: NotRequired[float]
     incorrect: NotRequired[float]

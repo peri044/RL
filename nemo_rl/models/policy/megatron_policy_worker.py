@@ -505,7 +505,10 @@ class MegatronPolicyWorker:
         else:
             hf_config_overrides = self.cfg.get("hf_config_overrides", {})
             import_model_from_hf_name(
-                hf_model_name, pretrained_path, self.cfg["megatron_cfg"], **hf_config_overrides
+                hf_model_name,
+                pretrained_path,
+                self.cfg["megatron_cfg"],
+                **hf_config_overrides,
             )
 
         pretrained_run_config = os.path.join(

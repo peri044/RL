@@ -33,7 +33,9 @@ def import_model_from_hf_name(
         output_path: Directory to write the Megatron checkpoint (e.g., /tmp/megatron_ckpt).
         megatron_config: Optional megatron config with paralellism settings for distributed megatron model import.
     """
-    bridge = AutoBridge.from_hf_pretrained(hf_model_name, trust_remote_code=True, **config_overrides)
+    bridge = AutoBridge.from_hf_pretrained(
+        hf_model_name, trust_remote_code=True, **config_overrides
+    )
 
     model_provider = bridge.to_megatron_provider(load_weights=True)
 
