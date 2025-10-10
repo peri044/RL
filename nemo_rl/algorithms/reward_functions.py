@@ -32,8 +32,16 @@ class RewardShapingConfig(TypedDict):
     """
 
     enabled: bool
+
+    # The length of the buffer to penalize responses that exceed the maximum response length threshold.
+    # Responses of length greater than overlong_buffer_length + max_response_length will
+    # receive the maximum penalty.
     overlong_buffer_length: NotRequired[int]
+
+    # The penalty for responses that exceed the maximum response length threshold.
     overlong_buffer_penalty: NotRequired[float]
+
+    # The maximum response length threshold. Responses exceeding this length will be penalized.
     max_response_length: NotRequired[int]
 
 

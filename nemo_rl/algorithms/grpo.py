@@ -80,8 +80,8 @@ TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
 class RewardScalingConfig(TypedDict):
     enabled: bool
-    correct: NotRequired[float]
-    incorrect: NotRequired[float]
+    correct: NotRequired[float] # max value for reward
+    incorrect: NotRequired[float] # min value for reward
 
 
 class AsyncGRPOConfig(TypedDict):
@@ -107,11 +107,17 @@ class GRPOConfig(TypedDict):
     seed: int
     async_grpo: NotRequired[AsyncGRPOConfig]
     overlong_filtering: NotRequired[bool]
+    # whether to enable dynamic sampling, i.e.
+    # whether to discard prompts whose rewards have zero standard deviation
     use_dynamic_sampling: bool
+    # When using dynamic sampling, the maximum number of batches to generate
+    # before throwing an error 
     max_num_gen_batches: NotRequired[int]
+    # When using dynamic sampling, generation prompt batch size will equal 
+    # num_prompts_per_step * dapo_batch_multiplier
+    dapo_batch_multiplier: NotRequired[int]
     reward_shaping: RewardShapingConfig
     reward_scaling: RewardScalingConfig
-    dapo_batch_multiplier: NotRequired[int]
 
 
 class GRPOSaveState(TypedDict):
