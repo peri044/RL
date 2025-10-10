@@ -417,6 +417,10 @@ def setup(
             assert loss_config["use_importance_sampling_correction"] is True, (
                 "Importance sampling must be enabled for vLLM FP8 generation for good convergence!"
             )
+        ## make vllm hf overrides match the training policy
+        generation_config["vllm_cfg"]["hf_overrides"] = policy_config.get(
+            "hf_config_overrides", {}
+        )
 
         policy_generation = VllmGeneration(
             cluster=inference_cluster, config=generation_config
@@ -441,8 +445,6 @@ def setup(
         total_train_iters = min(grpo_config["max_num_steps"], len(dataloader))
         policy_config["megatron_cfg"]["train_iters"] = total_train_iters
 
-    hf_config_overrides = policy_config.get("hf_config_overrides", {})
-
     policy = Policy(
         cluster=train_cluster,
         config=policy_config,
@@ -451,7 +453,6 @@ def setup(
         weights_path=weights_path,
         optimizer_path=optimizer_path,
         init_optimizer=True,
-        hf_config_overrides=hf_config_overrides,
     )
 
     # if it is not colocated inference, initialize collective communication for update weights

@@ -119,7 +119,6 @@ class DTensorPolicyWorkerV2:
         optimizer_path: Optional[str] = None,
         init_optimizer: bool = True,
         init_reference_model: bool = True,
-        hf_config_overrides: dict[str, Any] = {},
         **kwargs: Any,
     ):
         self.tokenizer = tokenizer
@@ -170,6 +169,8 @@ class DTensorPolicyWorkerV2:
                 f"[Rank {self.rank}] Sequence packing is enabled for model {model_name}"
             )
             print(f"[Rank {self.rank}] Using FlashAttention2 for sequence packing")
+
+        hf_config_overrides = self.cfg.get("hf_config_overrides", {})
 
         model_config = AutoConfig.from_pretrained(
             model_name,

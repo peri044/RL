@@ -188,8 +188,6 @@ def setup(
         processor = tokenizer
         tokenizer = processor.tokenizer
 
-    hf_config_overrides = policy_config.get("hf_config_overrides", {})
-
     policy = Policy(
         cluster=cluster,
         config=policy_config,
@@ -203,7 +201,6 @@ def setup(
         else None,
         init_optimizer=True,
         init_reference_model=False,
-        hf_config_overrides=hf_config_overrides,
     )
     loss_fn = NLLLoss()
     print("  ✓ Model initialized")

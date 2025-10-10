@@ -208,8 +208,6 @@ def setup(
                 if "iters" in k:
                     policy_config["megatron_cfg"]["scheduler"][k] *= 2
 
-    hf_config_overrides = policy_config.get("hf_config_overrides", {})
-
     policy = Policy(
         cluster=cluster,
         config=policy_config,
@@ -222,7 +220,6 @@ def setup(
         else None,
         init_optimizer=True,
         init_reference_model=False,
-        hf_config_overrides=hf_config_overrides,
     )
     loss_fn = PreferenceLoss()
     print("  ✓ Model initialized")
