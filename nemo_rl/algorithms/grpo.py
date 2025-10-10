@@ -420,7 +420,7 @@ def setup(
             )
         ## make vllm hf overrides match the training policy
         generation_config["vllm_cfg"]["hf_overrides"] = policy_config.get(
-            "hf_config_overrides"
+            "hf_config_overrides", {}
         )
 
         policy_generation = VllmGeneration(
