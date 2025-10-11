@@ -561,6 +561,11 @@ def dynamic_sampling(
     # is_batch_complete is used to indicate if the current batch was able to generate enough prompts with non-zero std.
     is_batch_complete = True
 
+    # Required batch size for training
+    train_prompts_size = (
+        master_config["grpo"]["num_prompts_per_step"]
+        * master_config["grpo"]["num_generations_per_prompt"]
+    )
     # Store the baseline, std and total_reward for the current unfiltered batch.
     repeated_batch["baseline"] = baseline
     repeated_batch["std"] = std
@@ -572,25 +577,7 @@ def dynamic_sampling(
         with timer.time("dynamic_sampling"):
             # Get the prompt indices with non-zero std
             non_zero_std_mask = std != 0.0
-            # Calculate the fraction of prompts with non-zero std
-            num_non_zero_std = non_zero_std_mask.sum().item()
-            total_prompts = len(non_zero_std_mask)
-            non_zero_std_fraction = (
-                num_non_zero_std / total_prompts if total_prompts > 0 else 0.0
-            )
 
-            # Log the fraction to stdout and wandb
-            print(
-                f"[Dynamic Sampling] {num_non_zero_std}/{total_prompts} prompts with non-zero std ({non_zero_std_fraction * 100:.1f}%)"
-            )
-
-            # Warn if the fraction is too low (i.e., too many prompts are being discarded)
-            if non_zero_std_fraction < 0.5:
-                print(
-                    f"WARNING: Only {num_non_zero_std}/{total_prompts} prompts have non-zero std ({non_zero_std_fraction * 100:.1f}%). "
-                    f"In the current batch, {total_prompts - num_non_zero_std}/{total_prompts} prompts have zero std, "
-                    f"which are being discarded. Consider tuning dapo_batch_multiplier to improve sample diversity. Please refer to the DAPO guide for more details."
-                )
             keep_prompt_indices = torch.arange(
                 len(non_zero_std_mask), device=std.device
             )[non_zero_std_mask].tolist()
@@ -621,21 +608,28 @@ def dynamic_sampling(
                 )
                 filtered_repeated_batch = batch_cache
 
-            generation_sample_buffer_size = filtered_repeated_batch.size
-            train_prompts_size = (
-                master_config["grpo"]["num_prompts_per_step"]
-                * master_config["grpo"]["num_generations_per_prompt"]
+            filtered_prompts_size = filtered_repeated_batch.size
+            # Calculate the fraction of prompts with non-zero std.
+            # Denominator is train_prompts_size that we use for training. This ratio can be > 1.0 if dapo_batch_multiplier > 1.0 and there are many prompt groups with non-zero std.
+            non_zero_std_fraction = (
+                filtered_prompts_size / train_prompts_size
+                if train_prompts_size > 0
+                else 0.0
+            )
+            print(
+                f"Detected {filtered_prompts_size} prompts with non-zero std; "
+                f"{train_prompts_size} are required and used for training."
             )
 
             # If the generation samples size is smaller than a fixed threshold (train_prompts_size), keep generating by processing the next batch
-            if generation_sample_buffer_size < train_prompts_size:
+            if filtered_prompts_size < train_prompts_size:
                 max_num_gen_batches = master_config["grpo"]["max_num_gen_batches"]
                 assert max_num_gen_batches > 0, (
                     "When using grpo.use_dynamic_sampling, grpo.max_num_gen_batches must be > 0"
                 )
                 if num_gen_batches <= max_num_gen_batches:
                     print(
-                        f"Generation sample buffer size: {generation_sample_buffer_size} is smaller than train_prompts_size: {train_prompts_size}. Processed {num_gen_batches} batches so far out of {max_num_gen_batches}."
+                        f"Generation sample buffer size: {filtered_prompts_size} is smaller than train_prompts_size: {train_prompts_size}. Processed {num_gen_batches} batches so far out of {max_num_gen_batches}."
                     )
                     is_batch_complete = False
                 else:
@@ -643,6 +637,14 @@ def dynamic_sampling(
                         f"Dynamic sampling has reached the maximum allowed number of batches ({max_num_gen_batches}). Consider evaluating the complexity of your data or adjusting the num_prompts_per_step or num_generations_per_prompt parameters to enhance the diversity of the samples."
                     )
             else:
+                # Ideally, the fraction should be 1.0,
+                if non_zero_std_fraction > 1.5:
+                    print(
+                        "WARNING: Over 50% of prompts with non-zero std are being discarded. "
+                        "Adjust 'dapo_batch_multiplier' to reduce the number of discarded prompts. "
+                        "Please refer to the DAPO guide for details."
+                    )
+
                 #  Slice the batch, rewards, baselines and std to ensure batch size is train_prompts_size
                 filtered_repeated_batch = filtered_repeated_batch.slice(
                     0, train_prompts_size
