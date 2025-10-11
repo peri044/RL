@@ -233,18 +233,18 @@ def setup(
     #           Data
     # ==========================
     # Validate dapo_batch_multiplier
-    dapo_batch_multiplier = grpo_config.get("dapo_batch_multiplier", 1)
-    assert dapo_batch_multiplier >= 1, (
-        f"dapo_batch_multiplier must be >= 1, got {dapo_batch_multiplier}"
-    )
-    train_batch_size = int(
-        grpo_config["num_prompts_per_step"] * dapo_batch_multiplier
-        if grpo_config["use_dynamic_sampling"]
-        else grpo_config["num_prompts_per_step"]
-    )
+    dapo_batch_multiplier = grpo_config["dapo_batch_multiplier"]
+    dataloader_batch_size = grpo_config["num_prompts_per_step"]
+    if not grpo_config["use_dynamic_sampling"]:
+        assert dapo_batch_multiplier == 1, (
+            "dapo_batch_multiplier>1 can only be used if use_dynamic_sampling=True"
+        )
+    else:
+        dataloader_batch_size = int(dataloader_batch_size * dapo_batch_multiplier)
+
     dataloader = StatefulDataLoader(
         dataset,
-        batch_size=train_batch_size,
+        batch_size=dataloader_batch_size,
         shuffle=data_config["shuffle"],
         collate_fn=rl_collate_fn,
         drop_last=True,
@@ -525,7 +525,6 @@ def setup(
 
 def dynamic_sampling(
     repeated_batch: BatchedDataDict[DatumSpec],
-    prompts: torch.Tensor,
     std: torch.Tensor,
     baseline: torch.Tensor,
     num_gen_batches: int,
@@ -958,7 +957,6 @@ def grpo_train(
                     # Apply dynamic sampling to filter prompts with non-zero std (DAPO algorithm)
                     repeated_batch, is_batch_complete, batch_cache = dynamic_sampling(
                         repeated_batch,
-                        input_ids,
                         std,
                         baseline,
                         num_gen_batches,
@@ -1122,6 +1120,13 @@ def grpo_train(
                         metrics[k] = np.mean(v).item()
                     else:
                         metrics[k] = np.sum(v).item()
+
+                if master_config["grpo"]["use_dynamic_sampling"]:
+                    metrics["non_zero_std_prompts_fraction"] = (
+                        len(metrics["filtered_reward"]) / len(metrics["reward"])
+                        if len(metrics["reward"]) > 0
+                        else 1.0
+                    )
                 metrics.update(rollout_metrics)
                 total_valid_tokens += metrics["global_valid_toks"]
 
@@ -1197,11 +1202,6 @@ def grpo_train(
             if master_config["grpo"]["use_dynamic_sampling"]:
                 log_data["filtered_rewards"] = rewards.tolist()
                 log_data["rewards"] = repeated_batch["total_reward"].tolist()
-                log_data["non_zero_std_prompts_fraction"] = (
-                    len(log_data["filtered_rewards"]) / len(log_data["rewards"])
-                    if len(log_data["rewards"]) > 0
-                    else 1.0
-                )
 
             log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
             log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
