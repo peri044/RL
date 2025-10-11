@@ -1,6 +1,6 @@
 # An in-depth Walkthrough of DAPO in NeMo RL
 
-This guide covers the [Decoupled Clip and Dynamic Sampling for Adaptive Policy Optimization (DAPO)](https://arxiv.org/pdf/2503.14476) implementation in NeMo RL.
+This guide covers the [Decoupled Clip and Dynamic Sampling Policy Optimization (DAPO)](https://arxiv.org/pdf/2503.14476) implementation in NeMo RL.
 
 DAPO introduces 4 key improvements over GRPO:
 1. **Clip-Higher**, which promotes the diversity of the system and avoids entropy collapse
@@ -23,7 +23,7 @@ uv run examples/run_grpo_math.py --config examples/configs/recipes/llm/dapo-qwen
 
 ## Dynamic Sampling
 
-Standard GRPO trains on all generated responses, even when they have identical rewards (zero gradient signal) within a prompt group of generations. Dynamic sampling filters to keep only groups with diverse rewards (`std > 0`), and accumulates them across batches until reaching the target batch size. For implementation details, see the [`dynamic_sampling`](../../nemo_rl/algorithms/grpo.py) function.
+Standard GRPO trains on all generated responses, even when they have identical rewards (zero gradient signal) within a prompt group of generations. Dynamic sampling filters to keep only groups with diverse rewards (`std > 0`), and accumulates them across batches until reaching the target batch size. Dynamic sampling can be enabled by setting `use_dynamic_sampling=True` in your configuration. For implementation details, see the [`dynamic_sampling`](../../nemo_rl/algorithms/grpo.py) function. 
 
 **Algorithm**: For each training step:
 
@@ -35,15 +35,15 @@ Standard GRPO trains on all generated responses, even when they have identical r
 6. Samples are accumulated until the maximum number of allowed batches (`max_num_gen_batches`) is reached. If the cache still does not meet the target rollout batch size at that point, an error is raised. To resolve this, consider adjusting parameters such as `num_prompts_per_step` or `num_generations_per_prompt` to increase sample diversity, or revisit the complexity of your data.
 7. Perform training on the collected samples with non-zero standard deviation
 
-> [!NOTE]  
-> `dapo_batch_multiplier` (a float ≥ 1.0) controls the initial prompt pool size by sampling `dapo_batch_multiplier × num_prompts_per_step` prompts before dynamic sampling.  
-> Higher values increase memory and compute requirements, while very low values (e.g., 1.0) may slow the cache accumulation of prompt groups with non-zero standard deviation. The optimal value depends on the dataset, model capacity, and overall training setup.  When **dynamic sampling** is enabled, we also log a metric called `non_zero_std_prompts_fraction`. This is defined as:  
-> 
-> \[
-> \text{non\_zero\_std\_fraction} = \frac{\text{# prompts with non-zero std sampled}}{\text{# prompts actually used for training}}
-> \]  
-> 
-> If this ratio exceeds **1.5**, a warning is issued. This indicates that a large portion (> 50%) of sampled prompts are being discarded, which can increase compute and memory overhead without improving training. In such cases, consider lowering the value slightly to achieve a more balanced trade-off between sampling diversity and efficiency.
+### A note on dapo_batch_multiplier
+
+`dapo_batch_multiplier` (a float ≥ 1.0) controls the initial prompt pool size by sampling `dapo_batch_multiplier × num_prompts_per_step` prompts before dynamic sampling. Higher values increase memory and compute requirements, while very low values (e.g., 1.0) may slow the cache accumulation of prompt groups with non-zero standard deviation. The optimal value depends on the dataset, model capacity, and overall training setup.  When **dynamic sampling** is enabled, we also log a metric called `non_zero_std_prompts_fraction`. This is defined as:
+
+$$
+\text{non_zero_std_fraction} = \frac{\text{# prompts with non-zero std sampled}}{\text{# prompts actually used for training}}
+$$
+
+If this ratio exceeds **1.5**, a warning is issued. This indicates that a large portion (> 50%) of sampled prompts are being discarded, which can increase compute and memory overhead without improving training. In such cases, consider lowering the value slightly to achieve a more balanced trade-off between sampling diversity and efficiency.
 
 ## Reward Shaping
 DAPO introduces an overlong reward shaping mechanism to reduce reward noise and stabilize training. This approach penalizes responses that exceed a specified length threshold, helping to prevent the model from generating excessively long outputs while maintaining solution quality.
@@ -96,6 +96,6 @@ Using the [DAPO example config](../../examples/configs/recipes/llm/dapo-qwen2.5-
 
 ## References
 
-- **DAPO Paper**: [Decoupled Clip and Dynamic Sampling for Adaptive Policy Optimization](https://arxiv.org/pdf/2503.14476)
+- **DAPO Paper**: [Decoupled Clip and Dynamic Sampling Policy Optimization](https://arxiv.org/pdf/2503.14476)
 - **GRPO Paper**: [Group Relative Policy Optimization](https://arxiv.org/abs/2402.03300)
 - **NeMo RL GRPO Guide**: [grpo.md](grpo.md)
