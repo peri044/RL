@@ -40,7 +40,7 @@ Standard GRPO trains on all generated responses, even when they have identical r
 `dapo_batch_multiplier` (a float ≥ 1.0) controls the initial prompt pool size by sampling `dapo_batch_multiplier × num_prompts_per_step` prompts before dynamic sampling. Higher values increase memory and compute requirements, while very low values (e.g., 1.0) may slow the cache accumulation of prompt groups with non-zero standard deviation. The optimal value depends on the dataset, model capacity, and overall training setup.  When **dynamic sampling** is enabled, we also log a metric called `non_zero_std_prompts_fraction`. This is defined as:
 
 $$
-\text{non_zero_std_fraction} = \frac{\text{# prompts with non-zero std sampled}}{\text{# prompts actually used for training}}
+\text{non\_zero\_std\_prompts\_fraction} = \frac{\text{\# prompts with non-zero std sampled}}{\text{\# prompts actually used for training}}
 $$
 
 If this ratio exceeds **1.5**, a warning is issued. This indicates that a large portion (> 50%) of sampled prompts are being discarded, which can increase compute and memory overhead without improving training. In such cases, consider lowering the value slightly to achieve a more balanced trade-off between sampling diversity and efficiency.
