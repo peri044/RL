@@ -32,8 +32,16 @@ class RewardShapingConfig(TypedDict):
     """
 
     enabled: bool
+
+    # The length of the buffer to penalize responses that exceed the maximum response length threshold.
+    # Responses of length greater than overlong_buffer_length + max_response_length will
+    # receive the maximum penalty.
     overlong_buffer_length: NotRequired[int]
+
+    # The penalty for responses that exceed the maximum response length threshold.
     overlong_buffer_penalty: NotRequired[float]
+
+    # The maximum response length threshold. Responses exceeding this length will be penalized.
     max_response_length: NotRequired[int]
 
 
@@ -57,6 +65,8 @@ def apply_reward_shaping(
         raise ValueError(
             "Reward function is enabled but only DAPO reward shaping is currently supported. Please ensure overlong_buffer_length, overlong_buffer_penalty, and max_response_length are properly configured."
         )
+
+    assert overlong_buffer_penalty >= 0, f"{overlong_buffer_penalty=} must be >=0"
 
     # Get the overlong_buffer_length, overlong_buffer_penalty and max_response_length
     overlong_buffer_length = cfg["overlong_buffer_length"]

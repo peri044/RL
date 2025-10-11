@@ -17,8 +17,13 @@ grpo:
   use_dynamic_sampling: false
   reward_shaping:
     enabled: false
+    overlong_buffer_length: 512
+    overlong_buffer_penalty: 1
+    max_response_length: ${policy.max_total_sequence_length}
   reward_scaling:
     enabled: false
+    correct: 1.0
+    incorrect: 0.0
   async_grpo:
     enabled: false
     max_trajectory_age_steps: 1
