@@ -611,7 +611,7 @@ def dynamic_sampling(
             filtered_prompts_size = filtered_repeated_batch.size
             # Calculate the fraction of prompts with non-zero std.
             # Denominator is train_prompts_size that we use for training. This ratio can be > 1.0 if dapo_batch_multiplier > 1.0 and there are many prompt groups with non-zero std.
-            non_zero_std_fraction = (
+            non_zero_std_prompts_fraction = (
                 filtered_prompts_size / train_prompts_size
                 if train_prompts_size > 0
                 else 0.0
@@ -638,7 +638,7 @@ def dynamic_sampling(
                     )
             else:
                 # Ideally, the fraction should be 1.0,
-                if non_zero_std_fraction > 1.5:
+                if non_zero_std_prompts_fraction > 1.5:
                     print(
                         "WARNING: Over 50% of prompts with non-zero std are being discarded. "
                         "Adjust 'dapo_batch_multiplier' to reduce the number of discarded prompts. "
@@ -650,7 +650,9 @@ def dynamic_sampling(
                     0, train_prompts_size
                 )
 
-        filtered_repeated_batch["non_zero_std_fraction"] = non_zero_std_fraction
+        filtered_repeated_batch["non_zero_std_prompts_fraction"] = (
+            non_zero_std_prompts_fraction
+        )
 
     batch_to_return = (
         filtered_repeated_batch
@@ -1127,7 +1129,7 @@ def grpo_train(
 
                 if master_config["grpo"]["use_dynamic_sampling"]:
                     metrics["non_zero_std_prompts_fraction"] = repeated_batch[
-                        "non_zero_std_fraction"
+                        "non_zero_std_prompts_fraction"
                     ]
 
                 metrics.update(rollout_metrics)

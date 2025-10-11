@@ -35,11 +35,15 @@ Standard GRPO trains on all generated responses, even when they have identical r
 6. Samples are accumulated until the maximum number of allowed batches (`max_num_gen_batches`) is reached. If the cache still does not meet the target rollout batch size at that point, an error is raised. To resolve this, consider adjusting parameters such as `num_prompts_per_step` or `num_generations_per_prompt` to increase sample diversity, or revisit the complexity of your data.
 7. Perform training on the collected samples with non-zero standard deviation
 
-> [!NOTE]
-> `dapo_batch_multiplier` (a float ≥ 1.0) scales the initial prompt pool size by sampling  
-> `dapo_batch_multiplier × num_prompts_per_step` prompts before dynamic sampling.  
-> Higher values increase memory and compute cost, while very low values (e.g., 1) may slow cache accumulation of prompt groups with non-zero standard deviation. Optimal choice depends on the dataset, model capacity, and training requirements.
-
+> [!NOTE]  
+> `dapo_batch_multiplier` (a float ≥ 1.0) controls the initial prompt pool size by sampling `dapo_batch_multiplier × num_prompts_per_step` prompts before dynamic sampling.  
+> Higher values increase memory and compute requirements, while very low values (e.g., 1.0) may slow the cache accumulation of prompt groups with non-zero standard deviation. The optimal value depends on the dataset, model capacity, and overall training setup.  When **dynamic sampling** is enabled, we also log a metric called `non_zero_std_prompts_fraction`. This is defined as:  
+> 
+> \[
+> \text{non\_zero\_std\_fraction} = \frac{\text{# prompts with non-zero std sampled}}{\text{# prompts actually used for training}}
+> \]  
+> 
+> If this ratio exceeds **1.5**, a warning is issued. This indicates that a large portion (> 50%) of sampled prompts are being discarded, which can increase compute and memory overhead without improving training. In such cases, consider lowering the value slightly to achieve a more balanced trade-off between sampling diversity and efficiency.
 
 ## Reward Shaping
 DAPO introduces an overlong reward shaping mechanism to reduce reward noise and stabilize training. This approach penalizes responses that exceed a specified length threshold, helping to prevent the model from generating excessively long outputs while maintaining solution quality.
@@ -57,8 +61,8 @@ grpo:
   max_num_gen_batches: 10     # Maximum number of batches to be used for accumulating non-zero std prompts
   reward_scaling:
     enabled: true
-    correct: 1.0
-    incorrect: -1.0
+    max: 1.0
+    min: -1.0
   
   reward_shaping:
     enabled: true
