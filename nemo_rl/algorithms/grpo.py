@@ -650,6 +650,8 @@ def dynamic_sampling(
                     0, train_prompts_size
                 )
 
+        filtered_repeated_batch["non_zero_std_fraction"] = non_zero_std_fraction
+
     batch_to_return = (
         filtered_repeated_batch
         if master_config["grpo"]["use_dynamic_sampling"]
@@ -1124,11 +1126,10 @@ def grpo_train(
                         metrics[k] = np.sum(v).item()
 
                 if master_config["grpo"]["use_dynamic_sampling"]:
-                    metrics["non_zero_std_prompts_fraction"] = (
-                        len(metrics["filtered_reward"]) / len(metrics["reward"])
-                        if len(metrics["reward"]) > 0
-                        else 1.0
-                    )
+                    metrics["non_zero_std_prompts_fraction"] = repeated_batch[
+                        "non_zero_std_fraction"
+                    ]
+
                 metrics.update(rollout_metrics)
                 total_valid_tokens += metrics["global_valid_toks"]
 
