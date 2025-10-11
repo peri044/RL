@@ -27,13 +27,19 @@ Standard GRPO trains on all generated responses, even when they have identical r
 
 **Algorithm**: For each training step:
 
-1. Sample `dapo_batch_multiplier × num_prompts_per_step` prompts from the dataset. The default value of `dapo_batch_multiplier` is 3.
+1. Sample `dapo_batch_multiplier × num_prompts_per_step` prompts from the dataset. The default value of `dapo_batch_multiplier` is 1.
 2. Generate `num_generations_per_prompt` responses per prompt and compute rewards
 3. Compute the baseline and standard deviation for each prompt group
 4. Filter prompt groups where `std > 0`
 5. Store these prompts in a cache until reaching the target training batch size of `num_prompts_per_step × num_generations_per_prompt` samples.
 6. Samples are accumulated until the maximum number of allowed batches (`max_num_gen_batches`) is reached. If the cache still does not meet the target rollout batch size at that point, an error is raised. To resolve this, consider adjusting parameters such as `num_prompts_per_step` or `num_generations_per_prompt` to increase sample diversity, or revisit the complexity of your data.
 7. Perform training on the collected samples with non-zero standard deviation
+
+> [!NOTE]
+> `dapo_batch_multiplier` (a float ≥ 1.0) scales the initial prompt pool size by sampling  
+> `dapo_batch_multiplier × num_prompts_per_step` prompts before dynamic sampling.  
+> Higher values increase memory and compute cost, while very low values (e.g., 1) may slow cache accumulation of prompt groups with non-zero standard deviation. Optimal choice depends on the dataset, model capacity, and training requirements.
+
 
 ## Reward Shaping
 DAPO introduces an overlong reward shaping mechanism to reduce reward noise and stabilize training. This approach penalizes responses that exceed a specified length threshold, helping to prevent the model from generating excessively long outputs while maintaining solution quality.

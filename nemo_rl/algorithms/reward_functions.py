@@ -62,7 +62,7 @@ def apply_reward_shaping(
     overlong_buffer_length = cfg["overlong_buffer_length"]
     overlong_buffer_penalty = cfg["overlong_buffer_penalty"]
     max_response_length = cfg["max_response_length"]
-
+    assert overlong_buffer_penalty >= 0, f"{overlong_buffer_penalty=} must be >=0"
     # Calculate the expected response length
     expected_response_length = max_response_length - overlong_buffer_length
 

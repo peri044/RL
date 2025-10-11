@@ -79,9 +79,19 @@ TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
 
 class RewardScalingConfig(TypedDict):
+    """Linearly rescales rewards from [r_min, r_max] to [min, max].
+
+    Example:
+        Original: [2.0, 5.0, 10.0], min=0.0, max=1.0
+        → Scaled: [0.0, 0.33, 1.0]
+
+    Formula:
+        scaled = min + (reward - r_min) / (r_max - r_min) * (max - min)
+    """
+
     enabled: bool
-    correct: NotRequired[float]
-    incorrect: NotRequired[float]
+    min: NotRequired[float]
+    max: NotRequired[float]
 
 
 class AsyncGRPOConfig(TypedDict):
@@ -111,7 +121,7 @@ class GRPOConfig(TypedDict):
     max_num_gen_batches: NotRequired[int]
     reward_shaping: RewardShapingConfig
     reward_scaling: RewardScalingConfig
-    dapo_batch_multiplier: NotRequired[int]
+    dapo_batch_multiplier: NotRequired[float]
 
 
 class GRPOSaveState(TypedDict):
@@ -216,9 +226,13 @@ def setup(
     # ==========================
     #           Data
     # ==========================
-    train_batch_size = (
-        grpo_config["num_prompts_per_step"]
-        * grpo_config.get("dapo_batch_multiplier", 1)
+    # Validate dapo_batch_multiplier
+    dapo_batch_multiplier = grpo_config.get("dapo_batch_multiplier", 1)
+    assert dapo_batch_multiplier >= 1, (
+        f"dapo_batch_multiplier must be >= 1, got {dapo_batch_multiplier}"
+    )
+    train_batch_size = int(
+        grpo_config["num_prompts_per_step"] * dapo_batch_multiplier
         if grpo_config["use_dynamic_sampling"]
         else grpo_config["num_prompts_per_step"]
     )
@@ -553,6 +567,25 @@ def dynamic_sampling(
         with timer.time("dynamic_sampling"):
             # Get the prompt indices with non-zero std
             non_zero_std_mask = std != 0.0
+            # Calculate the fraction of prompts with non-zero std
+            num_non_zero_std = non_zero_std_mask.sum().item()
+            total_prompts = len(non_zero_std_mask)
+            non_zero_std_fraction = (
+                num_non_zero_std / total_prompts if total_prompts > 0 else 0.0
+            )
+
+            # Log the fraction to stdout and wandb
+            print(
+                f"[Dynamic Sampling] {num_non_zero_std}/{total_prompts} prompts with non-zero std ({non_zero_std_fraction * 100:.1f}%)"
+            )
+
+            # Warn if the fraction is too low (i.e., too many prompts are being discarded)
+            if non_zero_std_fraction < 0.5:
+                print(
+                    f"WARNING: Only {num_non_zero_std}/{total_prompts} prompts have non-zero std ({non_zero_std_fraction * 100:.1f}%). "
+                    f"In the current batch, {total_prompts - num_non_zero_std}/{total_prompts} prompts have zero std, "
+                    f"which are being discarded. Consider tuning dapo_batch_multiplier to improve sample diversity. Please refer to the DAPO guide for more details."
+                )
             keep_prompt_indices = torch.arange(
                 len(non_zero_std_mask), device=std.device
             )[non_zero_std_mask].tolist()
@@ -611,14 +644,25 @@ def dynamic_sampling(
 def scale_rewards(
     repeated_batch: BatchedDataDict[DatumSpec], master_config: MasterConfig
 ) -> BatchedDataDict[DatumSpec]:
-    """Scale the rewards according to the reward_scaling config."""
-    # For math environments, correct answers get a reward of 1.0 and incorrect answers get a reward of 0.0.
-    # We scale the rewards according to the reward_scaling config.
-    if master_config["grpo"]["reward_scaling"]["enabled"]:
+    """Linearly rescale rewards from [r_min, r_max] to [config_min, config_max].
+
+    If `reward_scaling.enabled` is True, this maps the original reward range
+    [r_min, r_max] to [config_min, config_max]. Defaults: config_min=0.0,
+    config_max=1.0.
+    """
+    rs_cfg = master_config["grpo"]["reward_scaling"]
+    if rs_cfg["enabled"]:
         rewards = repeated_batch["total_reward"]
-        rewards[rewards == 1.0] = master_config["grpo"]["reward_scaling"]["correct"]
-        rewards[rewards == 0.0] = master_config["grpo"]["reward_scaling"]["incorrect"]
-        repeated_batch["total_reward"] = rewards
+        r_min, r_max = rewards.min(), rewards.max()
+
+        config_min = float(rs_cfg.get("min", 0.0))
+        config_max = float(rs_cfg.get("max", 1.0))
+
+        scaled = config_min + (rewards - r_min) / (r_max - r_min) * (
+            config_max - config_min
+        )
+        repeated_batch["total_reward"] = scaled
+
     return repeated_batch
 
 
@@ -1137,6 +1181,11 @@ def grpo_train(
             if master_config["grpo"]["use_dynamic_sampling"]:
                 log_data["filtered_rewards"] = rewards.tolist()
                 log_data["rewards"] = repeated_batch["total_reward"].tolist()
+                log_data["non_zero_std_prompts_fraction"] = (
+                    len(log_data["filtered_rewards"]) / len(log_data["rewards"])
+                    if len(log_data["rewards"]) > 0
+                    else 1.0
+                )
 
             log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
             log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
