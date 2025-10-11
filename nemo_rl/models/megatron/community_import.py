@@ -101,6 +101,7 @@ def export_model_from_megatron(
     output_path: str,
     hf_tokenizer_path: str,
     overwrite: bool = False,
+    hf_overrides: Optional[dict[str, Any]] = {},
 ):
     if os.path.exists(output_path) and not overwrite:
         raise FileExistsError(
@@ -114,7 +115,7 @@ def export_model_from_megatron(
     except ImportError:
         raise ImportError("megatron.bridge.training is not available.")
 
-    bridge = AutoBridge.from_hf_pretrained(hf_model_name, trust_remote_code=True)
+    bridge = AutoBridge.from_hf_pretrained(hf_model_name, trust_remote_code=True, **hf_overrides)
 
     # Export performs on CPU with proper distributed context
     with temporary_distributed_context(backend="gloo"):
