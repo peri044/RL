@@ -203,10 +203,14 @@ def main() -> None:
 
             if feature == "use_dynamic_sampling":
                 if config["grpo"][feature]:
-                    raise NotImplementedError(f"{feature} is not supported with async GRPO")
+                    raise NotImplementedError(
+                        f"{feature} is not supported with async GRPO"
+                    )
             else:
                 if config["grpo"][feature]["enabled"]:
-                    raise NotImplementedError(f"{feature} is not supported with async GRPO")
+                    raise NotImplementedError(
+                        f"{feature} is not supported with async GRPO"
+                    )
 
         from nemo_rl.algorithms.grpo import async_grpo_train
 

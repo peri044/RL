@@ -13,7 +13,7 @@ grpo:
   val_batch_size: 256
   seed: 42
   use_dynamic_sampling: false
-  dapo_batch_multiplier: 1
+  batch_multiplier: 1
   reward_shaping:
     enabled: false
     overlong_buffer_length: 512

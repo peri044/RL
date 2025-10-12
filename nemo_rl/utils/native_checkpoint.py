@@ -248,7 +248,9 @@ def convert_dcp_to_hf(
     )
     torch.save(state_dict["model"], weights_path)
 
-    config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True, **hf_overrides)
+    config = AutoConfig.from_pretrained(
+        model_name_or_path, trust_remote_code=True, **hf_overrides
+    )
     config.save_pretrained(hf_ckpt_path)
 
     # TODO: After the following PR gets merged:

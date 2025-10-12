@@ -247,8 +247,8 @@ def test_dapo_dynamic_sampling_filters_nonzero_std():
     num_gen_batches = 1
 
     # Test dynamic sampling
-    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
-        repeated_batch, prompts, std, baseline, num_gen_batches, master_config, timer
+    result_batch, is_batch_complete, batch_cache, _ = dynamic_sampling(
+        repeated_batch, std, baseline, num_gen_batches, master_config, timer
     )
 
     # Since both prompts have non-zero std, all 6 samples should be selected
@@ -307,8 +307,8 @@ def test_dapo_dynamic_sampling_filters_zero_std():
     num_gen_batches = 1
 
     # Test dynamic sampling
-    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
-        repeated_batch, prompts, std, baseline, num_gen_batches, master_config, timer
+    result_batch, is_batch_complete, batch_cache, _ = dynamic_sampling(
+        repeated_batch, std, baseline, num_gen_batches, master_config, timer
     )
 
     # Only the second prompt (indices 3,4,5) should be selected since first has zero std
@@ -376,8 +376,8 @@ def test_dapo_dynamic_sampling_batch_caching():
     num_gen_batches = 1
 
     # Test dynamic sampling - should indicate batch is not complete
-    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
-        repeated_batch, prompts, std, baseline, num_gen_batches, master_config, timer
+    result_batch, is_batch_complete, batch_cache, _ = dynamic_sampling(
+        repeated_batch, std, baseline, num_gen_batches, master_config, timer
     )
 
     # Should have cached the batch but marked as incomplete
@@ -389,9 +389,8 @@ def test_dapo_dynamic_sampling_batch_caching():
     assert batch_cache == result_batch
 
     # Run dynamic sampling again with the cached batch
-    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
+    result_batch, is_batch_complete, batch_cache, _ = dynamic_sampling(
         repeated_batch,
-        prompts,
         std,
         baseline,
         num_gen_batches,
@@ -451,8 +450,8 @@ def test_dapo_dynamic_sampling_disabled():
     num_gen_batches = 1
 
     # Test that dynamic sampling is bypassed
-    result_batch, is_batch_complete, batch_cache = dynamic_sampling(
-        repeated_batch, prompts, std, baseline, num_gen_batches, master_config, timer
+    result_batch, is_batch_complete, batch_cache, _ = dynamic_sampling(
+        repeated_batch, std, baseline, num_gen_batches, master_config, timer
     )
 
     # All samples should be kept when dynamic sampling is disabled
@@ -489,6 +488,7 @@ def test_noncolocated_inference_requires_explicit_gpus_per_node_single_node():
             "val_period": 0,
             "val_at_start": False,
             "use_dynamic_sampling": False,
+            "batch_multiplier": 1,
         },
         "data": {"shuffle": False},
         "logger": {},  # Config extraction requires this key
@@ -546,6 +546,7 @@ def test_noncolocated_inference_requires_explicit_gpus_per_node_multi_node():
             "val_period": 0,
             "val_at_start": False,
             "use_dynamic_sampling": False,
+            "batch_multiplier": 1,
         },
         "data": {"shuffle": False},
         "logger": {},  # Config extraction requires this key

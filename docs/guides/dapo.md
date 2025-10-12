@@ -27,7 +27,7 @@ Standard GRPO trains on all generated responses, even when they have identical r
 
 **Algorithm**: For each training step:
 
-1. Sample `dapo_batch_multiplier × num_prompts_per_step` prompts from the dataset. The default value of `dapo_batch_multiplier` is 1.
+1. Sample `batch_multiplier × num_prompts_per_step` prompts from the dataset. The default value of `batch_multiplier` is 1.
 2. Generate `num_generations_per_prompt` responses per prompt and compute rewards
 3. Compute the baseline and standard deviation for each prompt group
 4. Filter prompt groups where `std > 0`
@@ -35,15 +35,12 @@ Standard GRPO trains on all generated responses, even when they have identical r
 6. Samples are accumulated until the maximum number of allowed batches (`max_num_gen_batches`) is reached. If the cache still does not meet the target rollout batch size at that point, an error is raised. To resolve this, consider adjusting parameters such as `num_prompts_per_step` or `num_generations_per_prompt` to increase sample diversity, or revisit the complexity of your data.
 7. Perform training on the collected samples with non-zero standard deviation
 
-### A note on dapo_batch_multiplier
+### A note on batch_multiplier
 
-`dapo_batch_multiplier` (a float ≥ 1.0) controls the initial prompt pool size by sampling `dapo_batch_multiplier × num_prompts_per_step` prompts before dynamic sampling. Higher values increase memory and compute requirements, while very low values (e.g., 1.0) may slow the cache accumulation of prompt groups with non-zero standard deviation. The optimal value depends on the dataset, model capacity, and overall training setup.  When **dynamic sampling** is enabled, we also log a metric called `non_zero_std_prompts_fraction`. This is defined as:
+`batch_multiplier` (a float ≥ 1.0) controls the initial prompt pool size by sampling `batch_multiplier × num_prompts_per_step` prompts before dynamic sampling. Higher values increase memory and compute requirements, while very low values (e.g., 1.0) may slow the cache accumulation of prompt groups with non-zero standard deviation. The optimal value depends on the dataset, model capacity, and overall training setup.  When **dynamic sampling** is enabled, we also log two additional metrics:
 
-$$
-\text{non\_zero\_std\_prompts\_fraction} = \frac{\text{\# prompts with non-zero std sampled}}{\text{\# prompts actually used for training}}
-$$
-
-If this ratio exceeds **1.5**, a warning is issued. This indicates that a large portion (> 50%) of sampled prompts are being discarded, which can increase compute and memory overhead without improving training. In such cases, consider lowering the value slightly to achieve a more balanced trade-off between sampling diversity and efficiency.
+ * `dynamic_sampling_num_gen_batches`: The number of generation rounds needed to reach `num_prompts_per_step * num_generations_per_prompt` many samples with nonzero standard deviation. If this value is high, consider increasing `batch_multiplier`.
+ * `dynamic_sampling_num_discarded_valid_samples`: The number of samples with nonzero standard deviation that get discarded because we've already exceeded `num_prompts_per_step * num_generations_per_prompt`. If this value is frequently high (e.g. above `0.5 * num_prompts_per_step * num_generations_per_prompt`) and `dynamic_sampling_num_gen_batches` is consistently 1, consider decreasing `batch_multiplier`. 
 
 ## Reward Shaping
 DAPO introduces an overlong reward shaping mechanism to reduce reward noise and stabilize training. This approach penalizes responses that exceed a specified length threshold, helping to prevent the model from generating excessively long outputs while maintaining solution quality.
@@ -57,7 +54,7 @@ grpo:
   use_dynamic_sampling: true  # Enable DAPO dynamic sampling
   num_prompts_per_step: 512   # Target number of prompts per training step
   num_generations_per_prompt: 16  # Generations per prompt
-  dapo_batch_multiplier: 3    # Dataloader batch size = dapo_batch_multiplier × num_prompts_per_step
+  batch_multiplier: 3    # Dataloader batch size = batch_multiplier × num_prompts_per_step
   max_num_gen_batches: 10     # Maximum number of batches to be used for accumulating non-zero std prompts
   reward_scaling:
     enabled: true
@@ -75,7 +72,7 @@ grpo:
 
 **Key Parameters:**
 - **`use_dynamic_sampling`**: When enabled, activates DAPO's dynamic sampling algorithm to filter and accumulate prompt groups with non-zero standard deviation
-- **`dapo_batch_multiplier`**: Factor that scales the initial prompt pool size for sampling
+- **`batch_multiplier`**: Factor that scales the initial prompt pool size for sampling
 - **`max_num_gen_batches`**: Maximum number of batches to be used for accumulating non-zero std prompts
 - **`reward_scaling`**: When enabled, clamps each reward in the batch to [source_min, source_max] and linearly rescales it to [target_min, target_max]. Defaults: source_min=0.0, source_max=1.0, target_min=0.0, target_max=1.0.
 - **`reward_shaping`**: When enabled, applies the overlong penalty mechanism described in the Reward Shaping section above. Responses exceeding `max_response_length - overlong_buffer_length` receive penalties proportional to their excess length, helping to reduce reward noise and stabilize training.
