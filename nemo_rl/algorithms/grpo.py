@@ -665,24 +665,41 @@ def dynamic_sampling(
 def scale_rewards(
     repeated_batch: BatchedDataDict[DatumSpec], master_config: MasterConfig
 ) -> BatchedDataDict[DatumSpec]:
-    """Linearly rescale rewards from [r_min, r_max] to [config_min, config_max].
+    """Linearly scales rewards from a source range to a target range.
 
-    If `reward_scaling.enabled` is True, this maps the original reward range
-    [r_min, r_max] to [config_min, config_max]. Defaults: config_min=0.0,
-    config_max=1.0.
+    If `reward_scaling.enabled` is True, each reward in `repeated_batch["total_reward"]`
+    is clamped to the configured source interval [source_min, source_max] and then
+    rescaled to the target interval [target_min, target_max].
+
+    Default configuration:
+        source_min = 0.0
+        source_max = 1.0
+        target_min = 0.0
+        target_max = 1.0
     """
     rs_cfg = master_config["grpo"]["reward_scaling"]
     if rs_cfg["enabled"]:
         rewards = repeated_batch["total_reward"]
-        r_min, r_max = rewards.min(), rewards.max()
+        source_min = float(rs_cfg.get("source_min", 0.0))
+        source_max = float(rs_cfg.get("source_max", 1.0))
+        target_min = float(rs_cfg.get("target_min", 0.0))
+        target_max = float(rs_cfg.get("target_max", 1.0))
 
-        config_min = float(rs_cfg.get("min", 0.0))
-        config_max = float(rs_cfg.get("max", 1.0))
+        # Detect out-of-range values
+        out_of_range_mask = (rewards < source_min) | (rewards > source_max)
+        if torch.any(out_of_range_mask):
+            print(
+                f"[reward_scaling] WARNING: {int(out_of_range_mask.sum())} rewards "
+                f"are outside the configured source range [{source_min}, {source_max}]. "
+                f"Values will be clipped before scaling."
+            )
 
-        scaled = config_min + (rewards - r_min) / (r_max - r_min) * (
-            config_max - config_min
-        )
-        repeated_batch["total_reward"] = scaled
+        # Clamp and scale
+        rewards = torch.clamp(rewards, min=source_min, max=source_max)
+        scaled_rewards = target_min + (rewards - source_min) / (
+            source_max - source_min
+        ) * (target_max - target_min)
+        repeated_batch["total_reward"] = scaled_rewards
 
     return repeated_batch
 

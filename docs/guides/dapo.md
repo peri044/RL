@@ -61,8 +61,10 @@ grpo:
   max_num_gen_batches: 10     # Maximum number of batches to be used for accumulating non-zero std prompts
   reward_scaling:
     enabled: true
-    max: 1.0
-    min: -1.0
+    source_min: 0.0
+    source_max: 1.0
+    target_min: -1.0
+    target_max: 1.0
   
   reward_shaping:
     enabled: true
@@ -75,7 +77,7 @@ grpo:
 - **`use_dynamic_sampling`**: When enabled, activates DAPO's dynamic sampling algorithm to filter and accumulate prompt groups with non-zero standard deviation
 - **`dapo_batch_multiplier`**: Factor that scales the initial prompt pool size for sampling
 - **`max_num_gen_batches`**: Maximum number of batches to be used for accumulating non-zero std prompts
-- **`reward_scaling`**: When enabled, maps binary rewards (1.0 for correct, 0.0 for incorrect) to configured values before applying reward shaping
+- **`reward_scaling`**: When enabled, clamps each reward in the batch to [source_min, source_max] and linearly rescales it to [target_min, target_max]. Defaults: source_min=0.0, source_max=1.0, target_min=0.0, target_max=1.0.
 - **`reward_shaping`**: When enabled, applies the overlong penalty mechanism described in the Reward Shaping section above. Responses exceeding `max_response_length - overlong_buffer_length` receive penalties proportional to their excess length, helping to reduce reward noise and stabilize training.
 
 > [!NOTE]

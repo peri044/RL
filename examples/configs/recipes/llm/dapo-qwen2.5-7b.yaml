@@ -13,8 +13,10 @@ grpo:
   max_num_gen_batches: 10
   reward_scaling:
     enabled: true
-    max: 1.0
-    min: -1.0
+    source_min: 0.0
+    source_max: 1.0
+    target_min: -1.0
+    target_max: 1.0
   reward_shaping:
     enabled: true
     overlong_buffer_length: 2048
