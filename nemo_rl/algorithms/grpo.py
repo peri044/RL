@@ -79,19 +79,21 @@ TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
 
 class RewardScalingConfig(TypedDict):
-    """Linearly rescales rewards from [r_min, r_max] to [min, max].
+    """Configure linear reward scaling with clamping.
 
-    Example:
-        Original: [2.0, 5.0, 10.0], min=0.0, max=1.0
-        → Scaled: [0.0, 0.33, 1.0]
+    When `enabled` is True, each reward is clamped to the source interval
+    [source_min, source_max] and linearly mapped to the target interval
+    [target_min, target_max]. Refer to the scale_rewards function for the implementation.
 
-    Formula:
-        scaled = min + (reward - r_min) / (r_max - r_min) * (max - min)
+    Defaults:
+        source_min=0.0, source_max=1.0, target_min=0.0, target_max=1.0
     """
 
     enabled: bool
-    min: NotRequired[float]
-    max: NotRequired[float]
+    source_min: NotRequired[float]
+    source_max: NotRequired[float]
+    target_min: NotRequired[float]
+    target_max: NotRequired[float]
 
 
 class AsyncGRPOConfig(TypedDict):
@@ -663,7 +665,7 @@ def dynamic_sampling(
 
 
 def scale_rewards(
-    repeated_batch: BatchedDataDict[DatumSpec], master_config: MasterConfig
+    repeated_batch: BatchedDataDict[DatumSpec], reward_scaling_cfg: RewardScalingConfig
 ) -> BatchedDataDict[DatumSpec]:
     """Linearly scales rewards from a source range to a target range.
 
@@ -677,13 +679,12 @@ def scale_rewards(
         target_min = 0.0
         target_max = 1.0
     """
-    rs_cfg = master_config["grpo"]["reward_scaling"]
-    if rs_cfg["enabled"]:
+    if reward_scaling_cfg["enabled"]:
         rewards = repeated_batch["total_reward"]
-        source_min = float(rs_cfg.get("source_min", 0.0))
-        source_max = float(rs_cfg.get("source_max", 1.0))
-        target_min = float(rs_cfg.get("target_min", 0.0))
-        target_max = float(rs_cfg.get("target_max", 1.0))
+        source_min = float(reward_scaling_cfg.get("source_min", 0.0))
+        source_max = float(reward_scaling_cfg.get("source_max", 1.0))
+        target_min = float(reward_scaling_cfg.get("target_min", 0.0))
+        target_max = float(reward_scaling_cfg.get("target_max", 1.0))
 
         # Detect out-of-range values
         out_of_range_mask = (rewards < source_min) | (rewards > source_max)
@@ -955,7 +956,9 @@ def grpo_train(
                         )
                     policy_generation.finish_generation()
 
-                repeated_batch = scale_rewards(repeated_batch, master_config)
+                repeated_batch = scale_rewards(
+                    repeated_batch, master_config["grpo"]["reward_scaling"]
+                )
                 # Process rewards with custom reward function
                 if master_config["grpo"]["reward_shaping"]["enabled"]:
                     repeated_batch = apply_reward_shaping(
