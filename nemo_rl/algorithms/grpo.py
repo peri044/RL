@@ -126,8 +126,8 @@ class GRPOConfig(TypedDict):
     # before throwing an error
     max_num_gen_batches: NotRequired[int]
     # When using dynamic sampling, generation prompt batch size will equal
-    # num_prompts_per_step * dapo_batch_multiplier
-    dapo_batch_multiplier: NotRequired[float]
+    # num_prompts_per_step * batch_multiplier
+    batch_multiplier: NotRequired[float]
     reward_shaping: RewardShapingConfig
     reward_scaling: RewardScalingConfig
 
@@ -234,15 +234,15 @@ def setup(
     # ==========================
     #           Data
     # ==========================
-    # Validate dapo_batch_multiplier
-    dapo_batch_multiplier = grpo_config["dapo_batch_multiplier"]
+    # Validate batch_multiplier
+    batch_multiplier = grpo_config["batch_multiplier"]
     dataloader_batch_size = grpo_config["num_prompts_per_step"]
     if not grpo_config["use_dynamic_sampling"]:
-        assert dapo_batch_multiplier == 1, (
-            "dapo_batch_multiplier>1 can only be used if use_dynamic_sampling=True"
+        assert batch_multiplier == 1, (
+            "batch_multiplier>1 can only be used if use_dynamic_sampling=True"
         )
     else:
-        dataloader_batch_size = int(dataloader_batch_size * dapo_batch_multiplier)
+        dataloader_batch_size = int(dataloader_batch_size * batch_multiplier)
 
     dataloader = StatefulDataLoader(
         dataset,
@@ -572,6 +572,8 @@ def dynamic_sampling(
     repeated_batch["baseline"] = baseline
     repeated_batch["std"] = std
     total_rewards = repeated_batch["total_reward"]
+    dynamic_sampling_metrics = {}
+
     # Dynamic sampling algorithm (used in DAPO algorithm)
     # This block implements dynamic sampling by selecting prompt groups with non-zero std.
     # If sampled prompts (with non-zero std) are fewer than num_prompts_per_step * num_generations_per_prompt, continue sampling until max_num_gen_batches is reached.
@@ -611,13 +613,6 @@ def dynamic_sampling(
                 filtered_repeated_batch = batch_cache
 
             filtered_prompts_size = filtered_repeated_batch.size
-            # Calculate the fraction of prompts with non-zero std.
-            # Denominator is train_prompts_size that we use for training. This ratio can be > 1.0 if dapo_batch_multiplier > 1.0 and there are many prompt groups with non-zero std.
-            non_zero_std_prompts_fraction = (
-                filtered_prompts_size / train_prompts_size
-                if train_prompts_size > 0
-                else 0.0
-            )
             print(
                 f"Detected {filtered_prompts_size} prompts with non-zero std; "
                 f"{train_prompts_size} are required and used for training."
@@ -639,29 +634,22 @@ def dynamic_sampling(
                         f"Dynamic sampling has reached the maximum allowed number of batches ({max_num_gen_batches}). Consider evaluating the complexity of your data or adjusting the num_prompts_per_step or num_generations_per_prompt parameters to enhance the diversity of the samples."
                     )
             else:
-                # Ideally, the fraction should be 1.0,
-                if non_zero_std_prompts_fraction > 1.5:
-                    print(
-                        "WARNING: Over 50% of prompts with non-zero std are being discarded. "
-                        "Adjust 'dapo_batch_multiplier' to reduce the number of discarded prompts. "
-                        "Please refer to the DAPO guide for details."
-                    )
+                num_discarded_valid_samples = filtered_prompts_size - train_prompts_size
+                dynamic_sampling_metrics[
+                    "dynamic_sampling_num_discarded_valid_samples"
+                ] = num_discarded_valid_samples
 
                 #  Slice the batch, rewards, baselines and std to ensure batch size is train_prompts_size
                 filtered_repeated_batch = filtered_repeated_batch.slice(
                     0, train_prompts_size
                 )
 
-        filtered_repeated_batch["non_zero_std_prompts_fraction"] = (
-            non_zero_std_prompts_fraction
-        )
-
     batch_to_return = (
         filtered_repeated_batch
         if master_config["grpo"]["use_dynamic_sampling"]
         else repeated_batch
     )
-    return batch_to_return, is_batch_complete, batch_cache
+    return batch_to_return, is_batch_complete, batch_cache, dynamic_sampling_metrics
 
 
 def scale_rewards(
@@ -981,15 +969,19 @@ def grpo_train(
                         ],
                     )
                     # Apply dynamic sampling to filter prompts with non-zero std (DAPO algorithm)
-                    repeated_batch, is_batch_complete, batch_cache = dynamic_sampling(
-                        repeated_batch,
-                        std,
-                        baseline,
-                        num_gen_batches,
-                        master_config,
-                        timer,
-                        batch_cache,
+                    repeated_batch, is_batch_complete, batch_cache, ds_metrics = (
+                        dynamic_sampling(
+                            repeated_batch,
+                            std,
+                            baseline,
+                            num_gen_batches,
+                            master_config,
+                            timer,
+                            batch_cache,
+                        )
                     )
+                    if ds_metrics:
+                        ds_metrics["dynamic_sampling_num_gen_batches"] = num_gen_batches
                     # Get the updated rewards and baselines. For DAPO, these rewards and baselines only correspond to the prompts with non-zero std.
                     rewards = (
                         repeated_batch["total_reward"]
@@ -1127,6 +1119,7 @@ def grpo_train(
                     "reward": rewards.numpy(),
                     "mean_prompt_length": repeated_batch["length"].numpy(),
                     "total_num_tokens": input_lengths.numpy(),
+                    **ds_metrics,
                 }
                 if master_config["grpo"]["use_dynamic_sampling"]:
                     metrics["filtered_reward"] = rewards.numpy()
@@ -1146,11 +1139,6 @@ def grpo_train(
                         metrics[k] = np.mean(v).item()
                     else:
                         metrics[k] = np.sum(v).item()
-
-                if master_config["grpo"]["use_dynamic_sampling"]:
-                    metrics["non_zero_std_prompts_fraction"] = repeated_batch[
-                        "non_zero_std_prompts_fraction"
-                    ]
 
                 metrics.update(rollout_metrics)
                 total_valid_tokens += metrics["global_valid_toks"]

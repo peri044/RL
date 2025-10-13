@@ -115,7 +115,9 @@ def export_model_from_megatron(
     except ImportError:
         raise ImportError("megatron.bridge.training is not available.")
 
-    bridge = AutoBridge.from_hf_pretrained(hf_model_name, trust_remote_code=True, **hf_overrides)
+    bridge = AutoBridge.from_hf_pretrained(
+        hf_model_name, trust_remote_code=True, **hf_overrides
+    )
 
     # Export performs on CPU with proper distributed context
     with temporary_distributed_context(backend="gloo"):
