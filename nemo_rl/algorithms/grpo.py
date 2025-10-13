@@ -669,10 +669,10 @@ def scale_rewards(
     """
     if reward_scaling_cfg["enabled"]:
         rewards = repeated_batch["total_reward"]
-        source_min = float(reward_scaling_cfg.get("source_min", 0.0))
-        source_max = float(reward_scaling_cfg.get("source_max", 1.0))
-        target_min = float(reward_scaling_cfg.get("target_min", 0.0))
-        target_max = float(reward_scaling_cfg.get("target_max", 1.0))
+        source_min = float(reward_scaling_cfg["source_min"])
+        source_max = float(reward_scaling_cfg["source_max"])
+        target_min = float(reward_scaling_cfg["target_min"])
+        target_max = float(reward_scaling_cfg["target_max"])
 
         # Detect out-of-range values
         out_of_range_mask = (rewards < source_min) | (rewards > source_max)
