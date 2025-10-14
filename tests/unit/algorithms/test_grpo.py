@@ -490,7 +490,7 @@ def test_noncolocated_inference_requires_explicit_gpus_per_node_single_node():
             "use_dynamic_sampling": False,
             "batch_multiplier": 1,
         },
-        "data": {"shuffle": False},
+        "data": {"shuffle": False, "num_workers": 1},
         "logger": {},  # Config extraction requires this key
         "checkpointing": {},  # Config extraction requires this key
         "cluster": {
@@ -548,7 +548,7 @@ def test_noncolocated_inference_requires_explicit_gpus_per_node_multi_node():
             "use_dynamic_sampling": False,
             "batch_multiplier": 1,
         },
-        "data": {"shuffle": False},
+        "data": {"shuffle": False, "num_workers": 1},
         "logger": {},  # Config extraction requires this key
         "checkpointing": {},  # Config extraction requires this key
         "cluster": {
