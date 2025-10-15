@@ -28,7 +28,7 @@ Standard GRPO trains on all generated responses, even when they have identical r
 **Algorithm**: For each training step:
 
 1. Sample `batch_multiplier × num_prompts_per_step` prompts from the dataset. The default value of `batch_multiplier` is 1.
-2. Generate `num_generations_per_prompt` responses per prompt and compute rewards
+2. Generate `num_generations_per_prompt` responses per prompt and compute rewards.
 3. Compute the baseline and standard deviation for each prompt group
 4. Filter prompt groups where `std > 0`
 5. Store these prompts in a cache until reaching the target training batch size of `num_prompts_per_step × num_generations_per_prompt` samples.
