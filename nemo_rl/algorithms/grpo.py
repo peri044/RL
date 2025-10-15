@@ -124,7 +124,7 @@ class GRPOConfig(TypedDict):
     use_dynamic_sampling: bool
     # When using dynamic sampling, the maximum number of batches to generate
     # before throwing an error
-    max_num_gen_batches: NotRequired[int]
+    dynamic_sampling_max_gen_batches: NotRequired[int]
     # When using dynamic sampling, generation prompt batch size will equal
     # num_prompts_per_step * batch_multiplier
     batch_multiplier: NotRequired[float]
@@ -531,7 +531,7 @@ def dynamic_sampling(
     repeated_batch: BatchedDataDict[DatumSpec],
     std: torch.Tensor,
     baseline: torch.Tensor,
-    num_gen_batches: int,
+    dynamic_sampling_num_gen_batches: int,
     master_config: MasterConfig,
     timer: Timer,
     batch_cache: BatchedDataDict[DatumSpec] = None,
@@ -552,7 +552,7 @@ def dynamic_sampling(
         repeated_batch (BatchedDataDict[DatumSpec]): The current batch of data containing prompts, responses, rewards, baselines, and std.
         std (torch.Tensor): Tensor representing the standard deviation for each prompt group.
         baseline (torch.Tensor): Baseline values for each prompt group.
-        num_gen_batches (int): Number of generation batches processed at the current step.
+        dynamic_sampling_num_gen_batches (int): Number of generation batches processed at the current step.
         master_config (MasterConfig): Configuration containing GRPO and policy settings.
         batch_cache (BatchedDataDict[DatumSpec], optional): Cache storing previously selected prompts with non-zero std.
 
@@ -578,7 +578,7 @@ def dynamic_sampling(
 
     # Dynamic sampling algorithm (used in DAPO algorithm)
     # This block implements dynamic sampling by selecting prompt groups with non-zero std.
-    # If sampled prompts (with non-zero std) are fewer than num_prompts_per_step * num_generations_per_prompt, continue sampling until max_num_gen_batches is reached.
+    # If sampled prompts (with non-zero std) are fewer than num_prompts_per_step * num_generations_per_prompt, continue sampling until dynamic_sampling_max_gen_batches is reached.
     if master_config["grpo"]["use_dynamic_sampling"]:
         with timer.time("dynamic_sampling"):
             # Get the prompt indices with non-zero std
@@ -622,18 +622,20 @@ def dynamic_sampling(
 
             # If the generation samples size is smaller than a fixed threshold (train_prompts_size), keep generating by processing the next batch
             if filtered_prompts_size < train_prompts_size:
-                max_num_gen_batches = master_config["grpo"]["max_num_gen_batches"]
-                assert max_num_gen_batches > 0, (
-                    "When using grpo.use_dynamic_sampling, grpo.max_num_gen_batches must be > 0"
+                dynamic_sampling_max_gen_batches = master_config["grpo"][
+                    "dynamic_sampling_max_gen_batches"
+                ]
+                assert dynamic_sampling_max_gen_batches > 0, (
+                    "When using grpo.use_dynamic_sampling, grpo.dynamic_sampling_max_gen_batches must be > 0"
                 )
-                if num_gen_batches <= max_num_gen_batches:
+                if dynamic_sampling_num_gen_batches <= dynamic_sampling_max_gen_batches:
                     print(
-                        f"Generation sample buffer size: {filtered_prompts_size} is smaller than train_prompts_size: {train_prompts_size}. Processed {num_gen_batches} batches so far out of {max_num_gen_batches}."
+                        f"Generation sample buffer size: {filtered_prompts_size} is smaller than train_prompts_size: {train_prompts_size}. Processed {dynamic_sampling_num_gen_batches} batches so far out of {dynamic_sampling_max_gen_batches}."
                     )
                     is_batch_complete = False
                 else:
                     raise ValueError(
-                        f"Dynamic sampling has reached the maximum allowed number of batches ({max_num_gen_batches}). Consider evaluating the complexity of your data or adjusting the num_prompts_per_step or num_generations_per_prompt parameters to enhance the diversity of the samples."
+                        f"Dynamic sampling has reached the maximum allowed number of batches ({dynamic_sampling_max_gen_batches}). Consider evaluating the complexity of your data or adjusting the num_prompts_per_step or num_generations_per_prompt parameters to enhance the diversity of the samples."
                     )
             else:
                 num_discarded_valid_samples = filtered_prompts_size - train_prompts_size
@@ -863,8 +865,8 @@ def grpo_train(
         print(f"\n{'=' * 25} Epoch {current_epoch + 1}/{max_num_epochs} {'=' * 25}")
         # batch cache is used for DAPO. We store prompts with non-zero standard deviation in this cache.
         batch_cache: BatchedDataDict[DatumSpec] = None
-        # This is the number of batches we processed so far at each step to generate responses whose std is non-zero. Maximum threshold is set by max_num_gen_batches. Used in the case of dynamic sampling.
-        num_gen_batches = 0
+        # This is the number of batches we processed so far at each step to generate responses whose std is non-zero. Maximum threshold is set by dynamic_sampling_max_gen_batches. Used in the case of dynamic sampling.
+        dynamic_sampling_num_gen_batches = 0
 
         # Run grpo/dapo training loop (single-turn)
         for batch in dataloader:
@@ -910,7 +912,7 @@ def grpo_train(
                             policy.offload_after_refit()  # unload optimizer to make space for generation
                         policy_generation.prepare_for_generation()
 
-                num_gen_batches += 1
+                dynamic_sampling_num_gen_batches += 1
                 with timer.time("generation"):
                     # Use async rollouts if vLLM async engine is enabled
                     if _should_use_async_rollouts(master_config):
@@ -976,14 +978,16 @@ def grpo_train(
                             repeated_batch,
                             std,
                             baseline,
-                            num_gen_batches,
+                            dynamic_sampling_num_gen_batches,
                             master_config,
                             timer,
                             batch_cache,
                         )
                     )
                     if ds_metrics:
-                        ds_metrics["dynamic_sampling_num_gen_batches"] = num_gen_batches
+                        ds_metrics["dynamic_sampling_num_gen_batches"] = (
+                            dynamic_sampling_num_gen_batches
+                        )
                     # Get the updated rewards and baselines. For DAPO, these rewards and baselines only correspond to the prompts with non-zero std.
                     rewards = (
                         repeated_batch["total_reward"]
@@ -1293,9 +1297,9 @@ def grpo_train(
             )
             logger.log_metrics(timing_metrics, total_steps + 1, prefix="timing/train")
 
-            # Reset the batch and set num_gen_batches to 0
+            # Reset the batch and set dynamic_sampling_num_gen_batches to 0
             batch_cache = None
-            num_gen_batches = 0
+            dynamic_sampling_num_gen_batches = 0
 
             timer.reset()
             current_step += 1

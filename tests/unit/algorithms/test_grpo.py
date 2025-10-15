@@ -452,16 +452,21 @@ def test_dapo_dynamic_sampling_filters_nonzero_std():
             "use_dynamic_sampling": True,
             "num_prompts_per_step": 2,  # Want 2 prompts
             "num_generations_per_prompt": 3,  # Each with 3 generations
-            "max_num_gen_batches": 5,
+            "dynamic_sampling_max_gen_batches": 5,
         }
     }
 
     timer = Timer()
-    num_gen_batches = 1
+    dynamic_sampling_num_gen_batches = 1
 
     # Test dynamic sampling
     result_batch, is_batch_complete, batch_cache, _ = dynamic_sampling(
-        repeated_batch, std, baseline, num_gen_batches, master_config, timer
+        repeated_batch,
+        std,
+        baseline,
+        dynamic_sampling_num_gen_batches,
+        master_config,
+        timer,
     )
 
     # Since both prompts have non-zero std, all 6 samples should be selected
@@ -513,15 +518,21 @@ def test_dapo_dynamic_sampling_filters_zero_std():
             "use_dynamic_sampling": True,
             "num_prompts_per_step": 1,  # Want 1 prompt only
             "num_generations_per_prompt": 3,
+            "dynamic_sampling_max_gen_batches": 5,
         }
     }
 
     timer = Timer()
-    num_gen_batches = 1
+    dynamic_sampling_num_gen_batches = 1
 
     # Test dynamic sampling
     result_batch, is_batch_complete, batch_cache, _ = dynamic_sampling(
-        repeated_batch, std, baseline, num_gen_batches, master_config, timer
+        repeated_batch,
+        std,
+        baseline,
+        dynamic_sampling_num_gen_batches,
+        master_config,
+        timer,
     )
 
     # Only the second prompt (indices 3,4,5) should be selected since first has zero std
@@ -581,16 +592,21 @@ def test_dapo_dynamic_sampling_batch_caching():
             "use_dynamic_sampling": True,
             "num_prompts_per_step": 2,  # Need 2 prompts but only have 1
             "num_generations_per_prompt": 3,
-            "max_num_gen_batches": 5,
+            "dynamic_sampling_max_gen_batches": 5,
         }
     }
 
     timer = Timer()
-    num_gen_batches = 1
+    dynamic_sampling_num_gen_batches = 1
 
     # Test dynamic sampling - should indicate batch is not complete
     result_batch, is_batch_complete, batch_cache, _ = dynamic_sampling(
-        repeated_batch, std, baseline, num_gen_batches, master_config, timer
+        repeated_batch,
+        std,
+        baseline,
+        dynamic_sampling_num_gen_batches,
+        master_config,
+        timer,
     )
 
     # Should have cached the batch but marked as incomplete
@@ -606,7 +622,7 @@ def test_dapo_dynamic_sampling_batch_caching():
         repeated_batch,
         std,
         baseline,
-        num_gen_batches,
+        dynamic_sampling_num_gen_batches,
         master_config,
         timer,
         batch_cache,
@@ -656,15 +672,21 @@ def test_dapo_dynamic_sampling_disabled():
             "use_dynamic_sampling": False,
             "num_prompts_per_step": 2,
             "num_generations_per_prompt": 3,
+            "dynamic_sampling_max_gen_batches": 5,
         }
     }
 
     timer = Timer()
-    num_gen_batches = 1
+    dynamic_sampling_num_gen_batches = 1
 
     # Test that dynamic sampling is bypassed
     result_batch, is_batch_complete, batch_cache, _ = dynamic_sampling(
-        repeated_batch, std, baseline, num_gen_batches, master_config, timer
+        repeated_batch,
+        std,
+        baseline,
+        dynamic_sampling_num_gen_batches,
+        master_config,
+        timer,
     )
 
     # All samples should be kept when dynamic sampling is disabled

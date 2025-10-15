@@ -10,7 +10,7 @@ grpo:
   max_val_samples: 960
   val_batch_size: 960
   use_dynamic_sampling: true
-  max_num_gen_batches: 10
+  dynamic_sampling_max_gen_batches: 10
   reward_scaling:
     enabled: true
     source_min: 0.0
