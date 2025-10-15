@@ -2,7 +2,7 @@
 
 This guide covers the [Decoupled Clip and Dynamic Sampling Policy Optimization (DAPO)](https://arxiv.org/pdf/2503.14476) implementation in NeMo RL.
 
-DAPO introduces 4 key improvements over GRPO:
+DAPO introduces four key improvements over Group Relative Policy Optimization (GRPO):
 1. **Clip-Higher**, which promotes the diversity of the system and avoids entropy collapse
 2. **Dynamic Sampling**, which improves training efficiency and stability
 3. **Token-Level Policy Gradient Loss**, which is critical in long-CoT RL scenarios
