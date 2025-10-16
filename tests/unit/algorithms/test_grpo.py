@@ -928,6 +928,9 @@ def mock_grpo_components():
             "use_leave_one_out_baseline": False,
             "normalize_rewards": False,
             "overlong_filtering": False,
+            "reward_scaling": {"enabled": False},
+            "reward_shaping": {"enabled": False},
+            "use_dynamic_sampling": False,
         },
         "policy": {
             "train_global_batch_size": 1,
