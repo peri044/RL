@@ -5,6 +5,7 @@ grpo:
   batch_multiplier: 3 # Multiplier for dataloader batch size calculation (batch_multiplier × num_prompts_per_step). Following DAPO dynamic sampling, the actual training batch size equals num_prompts_per_step × num_generations_per_prompt.
   max_rollout_turns: 1 # for multi-turn rollouts. Math Environments just have 1 turn (answering the question)
   max_num_steps: 10000
+  max_num_epochs: 1
   use_leave_one_out_baseline: false
   val_period: 20
   max_val_samples: 960
