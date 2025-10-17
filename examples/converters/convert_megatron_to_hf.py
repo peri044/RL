@@ -61,7 +61,7 @@ def main():
 
     model_name = config["policy"]["model_name"]
     tokenizer_name = config["policy"]["tokenizer"]["name"]
-    hf_overrides = config["policy"].get("hf_overrides", {})
+    hf_overrides = config["policy"].get("hf_overrides", {}) or {}
 
     export_model_from_megatron(
         hf_model_name=model_name,

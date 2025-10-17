@@ -217,7 +217,7 @@ class DTensorPolicyWorker:
             )
             print(f"[Rank {self.rank}] Using FlashAttention2 for sequence packing")
 
-        hf_config_overrides = self.cfg.get("hf_config_overrides", {})
+        hf_config_overrides = self.cfg.get("hf_config_overrides", {}) or {}
 
         model_config = AutoConfig.from_pretrained(
             model_name,

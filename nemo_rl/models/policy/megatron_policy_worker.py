@@ -504,7 +504,7 @@ class MegatronPolicyWorker:
         if pt_checkpoint_exists:
             print(f"Checkpoint already exists at {pretrained_path}. Skipping import.")
         else:
-            hf_config_overrides = self.cfg.get("hf_config_overrides", {})
+            hf_config_overrides = self.cfg.get("hf_config_overrides", {}) or {}
             import_model_from_hf_name(
                 hf_model_name,
                 pretrained_path,
