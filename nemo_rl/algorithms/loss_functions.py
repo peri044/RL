@@ -339,16 +339,10 @@ class ClippedPGLossFn(LossFunction):
         # Approximating entropy as E_{s ~ \pi_{gen}(s)}[-(\pi_{curr}/\pi_{gen})log(\pi_{curr}(s))]
         # See more details and other metrics in docs/guides/grpo.md#metrics
         with torch.no_grad():
-            device_mesh = next_token_logits.device_mesh
-            tp_group = device_mesh.get_group("tp")
-            logits_tensor_local = next_token_logits.to_local()
-            S_local = int(logits_tensor_local.shape[1])
-            chunk_size = max(1, min(S_local, 1024))
-            seq_entropy_approx = ChunkedDistributedEntropy.apply(  # type: ignore
-                logits_tensor_local,
-                chunk_size,
-                tp_group,
-                False,  # inference_only
+            seq_entropy_approx = -masked_mean(
+                torch.exp(curr_logprobs - generation_logprobs) * curr_logprobs,
+                mask,
+                global_normalization_factor=global_valid_toks,
             )
 
         loss = actor_loss + kl
